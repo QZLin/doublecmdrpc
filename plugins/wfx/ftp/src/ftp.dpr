@@ -26,6 +26,7 @@ exports
   FsExecuteFileW,
   FsRenMovFileW,
   FsGetFileW,
+  FsGetPreviewBitmapW,
   FsPutFileW,
   FsDeleteFileW,
   FsMkDirW,

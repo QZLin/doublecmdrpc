@@ -98,7 +98,7 @@ end;"/>
         <PackageName Value="LazUtils"/>
       </Item2>
     </RequiredPackages>
-    <Units Count="7">
+    <Units Count="8">
       <Unit0>
         <Filename Value="ftp.dpr"/>
         <IsPartOfProject Value="True"/>
@@ -135,6 +135,11 @@ end;"/>
         <IsPartOfProject Value="True"/>
         <UnitName Value="FtpLng"/>
       </Unit6>
+      <Unit7>
+        <Filename Value="RemoteThumbnailProvider.pas"/>
+        <IsPartOfProject Value="True"/>
+        <UnitName Value="RemoteThumbnailProvider"/>
+      </Unit7>
     </Units>
   </ProjectOptions>
   <CompilerOptions>

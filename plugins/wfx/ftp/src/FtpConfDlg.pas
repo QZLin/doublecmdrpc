@@ -235,6 +235,7 @@ function DlgProc (pDlg: PtrUInt; DlgItemName: PAnsiChar; Msg, wParam, lParam: Pt
 var
   Data: PtrInt;
   Text: String;
+  ProviderPath, ConfigPath: String;
   Proxy: TFtpProxy;
 begin
   Result:= 0;
@@ -310,6 +311,24 @@ begin
           SendDlgMsg(pDlg, 'fnePublicKey', DM_SETTEXT, Data, 0);
           Data:= PtrInt(PAnsiChar(gConnection.PrivateKey));
           SendDlgMsg(pDlg, 'fnePrivateKey', DM_SETTEXT, Data, 0);
+
+          Data:= PtrInt(gConnection.RemoteThumbnailEnabled);
+          SendDlgMsg(pDlg, 'chkRemoteThumbnailEnabled', DM_SETCHECK, Data, 0);
+          Text:= gConnection.RemoteThumbnailVolumeId;
+          Data:= PtrInt(PAnsiChar(Text));
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailVolume', DM_SETTEXT, Data, 0);
+          Text:= gConnection.RemoteThumbnailRemoteRoot;
+          Data:= PtrInt(PAnsiChar(Text));
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailRemoteRoot', DM_SETTEXT, Data, 0);
+          Text:= gConnection.RemoteThumbnailCatalogRoot;
+          Data:= PtrInt(PAnsiChar(Text));
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailCatalogRoot', DM_SETTEXT, Data, 0);
+          Text:= GetRemoteThumbnailProviderPath;
+          Data:= PtrInt(PAnsiChar(Text));
+          SendDlgMsg(pDlg, 'fneRemoteThumbnailProvider', DM_SETTEXT, Data, 0);
+          Text:= GetRemoteThumbnailConfigPath;
+          Data:= PtrInt(PAnsiChar(Text));
+          SendDlgMsg(pDlg, 'fneRemoteThumbnailConfig', DM_SETTEXT, Data, 0);
 
           if SameText(gConnection.ConnectionName, cQuickConnection) then
           begin
@@ -472,6 +491,28 @@ begin
             Data:= SendDlgMsg(pDlg, 'fnePrivateKey', DM_GETTEXT, 0, 0);
             gConnection.PrivateKey:= PAnsiChar(Data);
 
+            Data:= SendDlgMsg(pDlg, 'chkRemoteThumbnailEnabled', DM_GETCHECK, 0, 0);
+            gConnection.RemoteThumbnailEnabled:= Boolean(Data);
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailVolume', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailVolumeId:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailRemoteRoot', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailRemoteRoot:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailCatalogRoot', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailCatalogRoot:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'fneRemoteThumbnailProvider', DM_GETTEXT, 0, 0);
+            ProviderPath:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'fneRemoteThumbnailConfig', DM_GETTEXT, 0, 0);
+            ConfigPath:= Trim(PAnsiChar(Data));
+            if gConnection.RemoteThumbnailEnabled and
+               ((gConnection.RemoteThumbnailVolumeId = '') or
+                (gConnection.RemoteThumbnailRemoteRoot = '') or
+                (gConnection.RemoteThumbnailCatalogRoot = '')) then
+            begin
+              gStartupInfo.MessageBox('PhotoThumbSync Volume ID, remote root, and catalog root are required.',
+                                      'FTP', MB_OK or MB_ICONERROR);
+              Exit;
+            end;
+
             if gConnection.OpenSSH then
             begin
               if (Length(gConnection.PublicKey) > 0) and (Length(gConnection.PrivateKey) = 0) or
@@ -488,6 +529,7 @@ begin
               ShowWarningSSL;
             end;
 
+            SetRemoteThumbnailPaths(ProviderPath, ConfigPath);
             SaveProxyList(pDlg);
 
             // close dialog

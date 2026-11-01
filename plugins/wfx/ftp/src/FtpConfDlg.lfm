@@ -535,6 +535,131 @@ object DialogBox: TDialogBox
         end
       end
     end
+    object tsRemoteThumbnail: TTabSheet
+      Caption = 'Thumbnails'
+      ClientHeight = 388
+      ClientWidth = 412
+      object lblRemoteThumbnailInfo: TLabel
+        Left = 12
+        Height = 36
+        Top = 12
+        Width = 388
+        AutoSize = False
+        Caption = 'Use PhotoThumbSync local WebP previews for this FTP/SFTP connection. Remote originals are never downloaded to make thumbnails.'
+        ParentColor = False
+        WordWrap = True
+      end
+      object chkRemoteThumbnailEnabled: TCheckBox
+        Left = 12
+        Height = 19
+        Top = 56
+        Width = 249
+        Caption = 'Enable PhotoThumbSync thumbnails'
+        TabOrder = 0
+      end
+      object lblRemoteThumbnailVolume: TLabel
+        Left = 12
+        Height = 18
+        Top = 91
+        Width = 65
+        Caption = 'Volume ID:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailVolume: TEdit
+        Left = 142
+        Height = 26
+        Top = 87
+        Width = 258
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 1
+      end
+      object lblRemoteThumbnailRemoteRoot: TLabel
+        Left = 12
+        Height = 18
+        Top = 123
+        Width = 82
+        Caption = 'Remote root:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailRemoteRoot: TEdit
+        Left = 142
+        Height = 26
+        Top = 119
+        Width = 258
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 2
+      end
+      object lblRemoteThumbnailCatalogRoot: TLabel
+        Left = 12
+        Height = 18
+        Top = 155
+        Width = 82
+        Caption = 'Catalog root:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailCatalogRoot: TEdit
+        Left = 142
+        Height = 26
+        Top = 151
+        Width = 258
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 3
+      end
+      object lblRemoteThumbnailProvider: TLabel
+        Left = 12
+        Height = 18
+        Top = 191
+        Width = 104
+        Caption = 'Provider DLL:'
+        ParentColor = False
+      end
+      object fneRemoteThumbnailProvider: TFileNameEdit
+        Left = 12
+        Height = 23
+        Top = 211
+        Width = 388
+        Filter = 'RemoteThumbnail provider|RemoteThumbnailProvider.dll|All files|*.*'
+        FilterIndex = 1
+        HideDirectories = False
+        ButtonWidth = 23
+        NumGlyphs = 1
+        Anchors = [akTop, akLeft, akRight]
+        MaxLength = 0
+        TabOrder = 4
+      end
+      object lblRemoteThumbnailConfig: TLabel
+        Left = 12
+        Height = 18
+        Top = 246
+        Width = 107
+        Caption = 'Provider config:'
+        ParentColor = False
+      end
+      object fneRemoteThumbnailConfig: TFileNameEdit
+        Left = 12
+        Height = 23
+        Top = 266
+        Width = 388
+        Filter = 'INI files|*.ini|All files|*.*'
+        FilterIndex = 1
+        HideDirectories = False
+        ButtonWidth = 23
+        NumGlyphs = 1
+        Anchors = [akTop, akLeft, akRight]
+        MaxLength = 0
+        TabOrder = 5
+      end
+      object lblRemoteThumbnailDefaults: TLabel
+        Left = 12
+        Height = 36
+        Top = 303
+        Width = 388
+        AutoSize = False
+        Caption = 'Blank paths use RemoteThumbnailProvider.dll and RemoteThumbnailWFX.ini next to ftp.wfx. Mapping example: /sdcard/Pictures -> Pictures.'
+        ParentColor = False
+        WordWrap = True
+      end
+    end
     object tsProxy: TTabSheet
       Caption = 'Proxy'
       ClientHeight = 388

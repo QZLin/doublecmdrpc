@@ -34,3 +34,7 @@ lib/
 # Application bundle for Mac OS
 *.app/
 .DS_Store
+
+# Local RPC and verification artifacts
+/.artifacts/
+*.local.*
