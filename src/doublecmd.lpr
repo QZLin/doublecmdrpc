@@ -96,6 +96,7 @@ uses
   fstartingsplash,
   ulog,
   uVariableMenuSupport,
+  uDebugRpcServer,
   uLng
   {$IFDEF MSWINDOWS}
   , uMyWindows
@@ -116,10 +117,19 @@ uses
 {$R doublecmd.manifest.rc}
 {$ENDIF}
 
-{$IFDEF HEAPTRC}
 var
+  DebugRpcStarted: Boolean = False;
+{$IFDEF HEAPTRC}
   LogPath: String;
 {$ENDIF}
+
+function ShouldStartDebugRpc: Boolean;
+begin
+  Result:= CommandLineParams.DebugRpc;
+  {$IFDEF DEBUG_RPC_DEFAULT}
+  Result:= True;
+  {$ENDIF}
+end;
 
 begin
   // Initialize again
@@ -246,7 +256,13 @@ begin
 
       frmMain.Show;
       Application.ProcessMessages;
+{$IFDEF MSWINDOWS}
+      if ShouldStartDebugRpc then DebugRpcStarted:= StartDebugRpcServer;
+{$ENDIF}
       Application.Run;
+{$IFDEF MSWINDOWS}
+      if DebugRpcStarted then StopDebugRpcServer;
+{$ENDIF}
 
       if not UniqueInstance.isAnotherDCRunningWhileIamRunning then
         DeleteTempFolderDeletableAtTheEnd;

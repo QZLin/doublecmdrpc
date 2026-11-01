@@ -101,7 +101,12 @@ type
     function GetIconRect(FileIndex: PtrInt): TRect; override;
     procedure MouseScrollTimer(Sender: TObject); override;
     procedure DoFileChanged(ADisplayFile: TDisplayFile; APropertiesChanged: TFilePropertiesTypes); override;
+    procedure DoPreviewInvalidated(const APaths: TPathsArray); override;
+    procedure DoFileRenamed(ADisplayFile: TDisplayFile); override;
   public
+    { Debug RPC automation helpers; invoke only from the GUI thread. }
+    procedure DebugInvalidatePreviews(const APaths: TPathsArray);
+    procedure DebugRequestVisiblePreviews;
     constructor Create(AOwner: TWinControl; AConfig: TXmlConfig; ANode: TXmlNode; AFlags: TFileViewFlags = []); override;
     constructor Create(AOwner: TWinControl; AFileView: TFileView; AFlags: TFileViewFlags = []); override;
     destructor Destroy; override;
@@ -113,7 +118,7 @@ implementation
 
 uses
   LCLIntf, LCLType, LMessages, Graphics, Math, StdCtrls, uFileSourceProperty,
-  uGlobs, uPixMapManager;
+  uGlobs, uPixMapManager, uDebugRpcDiagnostics;
 
 { TFileThumbnailsRetriever }
 
@@ -135,7 +140,7 @@ begin
     try
         if FWorkingFile.Tag < 0 then
         begin
-          Bitmap:= FThumbnailManager.CreatePreview(FWorkingFile.FSFile);
+          Bitmap:= FThumbnailManager.CreatePreview(FWorkingFile.FSFile, FFileSource);
           if Assigned(Bitmap) then
           begin
             FWorkingFile.Tag := FBitmapList.Add(Bitmap);
@@ -535,6 +540,9 @@ var
         IconRect.Width:= IconWidth;
         IconRect.Height:= IconHeight;
         Canvas.StretchDraw(IconRect, Bitmap);
+        DebugRpcRecord('thumbnail', 'ui.draw', AFile.FSFile.FullPath,
+          'painted', EmptyStr, 0, IconID,
+          IntToStr(Bitmap.Width) + 'x' + IntToStr(Bitmap.Height));
       end
     else
       begin
@@ -648,6 +656,9 @@ begin
     begin
       OrigDisplayFile.Tag := UpdatedFile.Tag;
       RedrawFile(OrigDisplayFile);
+      DebugRpcRecord('thumbnail', 'display.queued',
+        OrigDisplayFile.FSFile.FullPath, 'redraw', EmptyStr, 0,
+        UpdatedFile.Tag);
     end
     // The file was changed while we creating a thumbnail
     // so we need to request a thumbnail creation again
@@ -705,7 +716,7 @@ begin
      IsEmpty then
     Exit;
 
-  if fspDirectAccess in FileSource.Properties then
+  if (fspDirectAccess in FileSource.Properties) or FileSource.SupportsPreviewBitmap then
   begin
     VisibleFiles := GetVisibleFilesIndexes;
 
@@ -717,7 +728,7 @@ begin
 
         if (AFile.Tag < 0) and AFile.FSFile.IsNameValid then
         begin
-          Bitmap:= FThumbnailManager.CreatePreview(AFile.FSFile);
+          Bitmap:= FThumbnailManager.CreatePreview(AFile.FSFile, FileSource);
           if Assigned(Bitmap) then
           begin
             AFile.Tag := FBitmapList.Add(Bitmap);
@@ -842,10 +853,72 @@ begin
   end;
 end;
 
+procedure TThumbFileView.DoPreviewInvalidated(const APaths: TPathsArray);
+var
+  FileIndex, PathIndex: Integer;
+  ShouldInvalidate, InvalidatedAny: Boolean;
+  DisplayFile: TDisplayFile;
+begin
+  if (csDestroying in ComponentState) or not Assigned(FThumbnailManager) then Exit;
+  FThumbnailManager.ClearNativeCache;
+  InvalidatedAny:= False;
+  if Assigned(FAllDisplayFiles) then
+  begin
+    for FileIndex:= 0 to FAllDisplayFiles.Count - 1 do
+    begin
+      DisplayFile:= FAllDisplayFiles[FileIndex];
+      ShouldInvalidate:= Length(APaths) = 0;
+      if not ShouldInvalidate then
+        for PathIndex:= 0 to High(APaths) do
+          if DisplayFile.FSFile.FullPath = APaths[PathIndex] then
+          begin
+            ShouldInvalidate:= True;
+            Break;
+          end;
+      if not ShouldInvalidate then Continue;
+      DisplayFile.Busy:= DisplayFile.Busy - [bsTag];
+      if InRange(DisplayFile.Tag, 0, FBitmapList.Count - 1) then
+        FBitmapList[DisplayFile.Tag]:= nil;
+      DisplayFile.Tag:= -1;
+      InvalidatedAny:= True;
+    end;
+  end;
+  if InvalidatedAny then
+    Notify([fvnVisibleFilePropertiesChanged]);
+end;
+
+procedure TThumbFileView.DebugInvalidatePreviews(const APaths: TPathsArray);
+var
+  Index: Integer;
+begin
+  DoPreviewInvalidated(APaths);
+  if Length(APaths) = 0 then
+    DebugRpcRecord('thumbnail', 'invalidate', EmptyStr, 'queued', EmptyStr)
+  else
+    for Index:= 0 to High(APaths) do
+      DebugRpcRecord('thumbnail', 'invalidate', APaths[Index], 'queued',
+        EmptyStr, 0, Length(APaths));
+end;
+
+procedure TThumbFileView.DebugRequestVisiblePreviews;
+begin
+  EnsureDisplayProperties;
+end;
+
+procedure TThumbFileView.DoFileRenamed(ADisplayFile: TDisplayFile);
+begin
+  inherited DoFileRenamed(ADisplayFile);
+  if FileSource.SupportsPreviewBitmap then
+    DoFileChanged(ADisplayFile, [fpName]);
+end;
+
 procedure TThumbFileView.DoFileChanged(ADisplayFile: TDisplayFile;
   APropertiesChanged: TFilePropertiesTypes);
 begin
-  if (APropertiesChanged * [fpSize, fpModificationTime] = []) then
+  if FileSource.SupportsPreviewBitmap then
+    FThumbnailManager.ClearNativeCache;
+  if not FileSource.SupportsPreviewBitmap and
+     (APropertiesChanged * [fpSize, fpModificationTime] = []) then
     Exit;
 
   ADisplayFile.Busy := ADisplayFile.Busy - [bsTag];

@@ -5,7 +5,7 @@ unit uFileSource;
 interface
 
 uses
-  Classes, SysUtils,
+  Classes, SysUtils, Types,
   syncobjs, URIParser,
   LCLProc, Menus, Graphics, ShellCtrls,
   DCStrUtils, DCOSUtils,
@@ -99,7 +99,7 @@ type
   TPathsArray = array of string;
 
   {$scopedEnums on}
-  TFileSourceEventType = ( reload, relocation, queryActive );
+  TFileSourceEventType = ( reload, relocation, queryActive, previewInvalidated );
 
   TFileSourceEventParams = record
     eventType: TFileSourceEventType;
@@ -194,6 +194,12 @@ type
     function GetRootDir(sPath : String): String; overload;
     function GetRootDir: String; overload;
     function GetPathType(sPath : String): TPathType;
+
+    { True means a provider handled the request, including a cache miss.
+      The caller must not fall back to opening/downloading the original. }
+    function SupportsPreviewBitmap: Boolean;
+    function GetPreviewBitmap(aFile: TFile; const ASize: TSize;
+      out ABitmap: TBitmap; out ACacheKey: String; out ACacheable: Boolean): Boolean;
 
     function GetCustomIcon(aFile: TFile; AIconSize: Integer; out AIcon: TBitmap): IntPtr; overload;
     function GetCustomIcon(const path: String; const iconSize: Integer): TBitmap; overload;
@@ -412,6 +418,12 @@ type
 
     function CreateDirectory(const Path: String): Boolean; virtual;
     function FileSystemEntryExists(const Path: String; const Options: TFileSourceExistsOptions): TFileSourceExistsResult; virtual;
+
+    { True means a provider handled the request, including a cache miss.
+      The caller must not fall back to opening/downloading the original. }
+    function SupportsPreviewBitmap: Boolean; virtual;
+    function GetPreviewBitmap(aFile: TFile; const ASize: TSize;
+      out ABitmap: TBitmap; out ACacheKey: String; out ACacheable: Boolean): Boolean; virtual;
 
     function GetCustomIcon(aFile: TFile; AIconSize: Integer; out AIcon: TBitmap): PtrInt; virtual; overload;
     function GetCustomIcon(const path: String; const iconSize: Integer): TBitmap; virtual; overload;
@@ -745,6 +757,20 @@ function TFileSource.FileSystemEntryExists(
   const Options: TFileSourceExistsOptions): TFileSourceExistsResult;
 begin
   Result := TFileSourceExistsResult.notSupported;
+end;
+
+function TFileSource.SupportsPreviewBitmap: Boolean;
+begin
+  Result:= False;
+end;
+
+function TFileSource.GetPreviewBitmap(aFile: TFile; const ASize: TSize;
+  out ABitmap: TBitmap; out ACacheKey: String; out ACacheable: Boolean): Boolean;
+begin
+  ABitmap:= nil;
+  ACacheKey:= EmptyStr;
+  ACacheable:= False;
+  Result:= False;
 end;
 
 function TFileSource.GetCustomIcon(aFile: TFile; AIconSize: Integer; out

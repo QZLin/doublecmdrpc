@@ -245,6 +245,7 @@ type
     procedure PushRenameEvent(AFile: TFile; const NewFileName: String);
     procedure AddWorker(const Worker: TFileViewWorker; SetEvents: Boolean = True);
     procedure DoFileChanged(ADisplayFile: TDisplayFile; APropertiesChanged: TFilePropertiesTypes); virtual;
+    procedure DoPreviewInvalidated(const APaths: TPathsArray); virtual;
     procedure DoFileRenamed(ADisplayFile: TDisplayFile); virtual;
     procedure BeginUpdate;
     procedure CalculateSpace(AFile: TDisplayFile);
@@ -388,6 +389,12 @@ type
     destructor Destroy; override;
     procedure Clear;
     procedure clearFilesOnly;
+
+    { Debug RPC automation helpers. These wrappers deliberately expose only
+      scheduling state and the existing display-properties request; callers
+      must still invoke them from the GUI thread. }
+    function DebugIsIdle: Boolean;
+    procedure DebugRequestDisplayProperties;
 
     function Clone({%H-}NewParent: TWinControl): TFileView; virtual;
     procedure CloneTo(AFileView: TFileView); virtual;
@@ -1455,6 +1462,11 @@ begin
   // Empty
 end;
 
+procedure TFileView.DoPreviewInvalidated(const APaths: TPathsArray);
+begin
+  // Only thumbnail views have a preview cache.
+end;
+
 procedure TFileView.DoFileRenamed(ADisplayFile: TDisplayFile);
 begin
   // Empty
@@ -2471,6 +2483,20 @@ end;
 function TFileView.IsLoadingFileList: Boolean;
 begin
   Result := GetCurrentWorkType = fvwtCreate;
+end;
+
+function TFileView.DebugIsIdle: Boolean;
+begin
+  if csDestroying in ComponentState then Exit(False);
+  Result:= (GetCurrentWorkType = fvwtNone) and (FRequests = []);
+  if Result and Assigned(FReloadTimer) then Result:= not FReloadTimer.Enabled;
+  if Result and Assigned(FPendingFilesTimer) then
+    Result:= not FPendingFilesTimer.Enabled;
+end;
+
+procedure TFileView.DebugRequestDisplayProperties;
+begin
+  EnsureDisplayProperties;
 end;
 
 function TFileView.Reload(const PathsToReload: TPathsArray = nil): Boolean;
@@ -3527,7 +3553,9 @@ begin
   else if params.eventType = TFileSourceEventType.relocation then
     handleRelocation
   else if params.eventType = TFileSourceEventType.queryActive then
-    handleQueryActive;
+    handleQueryActive
+  else if params.eventType = TFileSourceEventType.previewInvalidated then
+    DoPreviewInvalidated(params.paths);
 end;
 
 procedure TFileView.ReloadTimerEvent(Sender: TObject);

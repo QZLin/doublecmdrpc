@@ -26,6 +26,7 @@ type
 
 function VerifyChild(hPipe: THandle): Boolean;
 function VerifyParent(hPipe: THandle): Boolean;
+function VerifySameUser(hPipe: THandle): Boolean;
 function GetAdministratorsSID(out SID: TBytes): Boolean;
 
 implementation
@@ -72,6 +73,30 @@ begin
     end;
   end;
   Result:= False;
+end;
+
+function VerifySameUser(hPipe: THandle): Boolean;
+const
+  PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+var
+  ClientProcessId: ULONG;
+  ClientProcess: THandle;
+  ServerSID, ClientSID: TBytes;
+begin
+  Result:= False;
+  if not Assigned(GetNamedPipeClientProcessId) or
+     not GetNamedPipeClientProcessId(hPipe, @ClientProcessId) then Exit;
+  ClientProcess:= OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False,
+    ClientProcessId);
+  if ClientProcess = 0 then Exit;
+  try
+    if not GetProcessUserSID(GetCurrentProcess, ServerSID) or
+       not GetProcessUserSID(ClientProcess, ClientSID) or
+       (Length(ServerSID) = 0) or (Length(ClientSID) = 0) then Exit;
+    Result:= EqualSid(PSID(@ServerSID[0]), PSID(@ClientSID[0]));
+  finally
+    CloseHandle(ClientProcess);
+  end;
 end;
 
 function GetAdministratorsSID(out SID: TBytes): Boolean;

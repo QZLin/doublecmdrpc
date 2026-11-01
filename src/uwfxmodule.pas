@@ -139,6 +139,7 @@ type
     function WfxDisconnect(const DisconnectRoot: String): Boolean;
     function WfxContentGetDefaultView(out DefaultView: TFileSourceFields): Boolean;
     function WfxExtractCustomIcon(var RemoteName: String; AIconSize: Integer; out TheIcon: TWfxIcon): Integer;
+    function WfxGetPreviewBitmap(var RemoteName: String; AWidth, AHeight: Integer; out ABitmap: HBITMAP): Integer;
   private
     function LoadModule(const sName: String):Boolean; overload; {Load plugin}
     procedure UnloadModule; override;
@@ -154,6 +155,8 @@ type
     function ContentPlugin: Boolean;
 
     property BackgroundFlags: Integer read FBackgroundFlags write FBackgroundFlags;
+    property ModulePath: String read FModulePath;
+    property ModuleHandle: TLibHandle read FModuleHandle;
   end;
 
   { TWFXModuleList }
@@ -178,6 +181,8 @@ type
     function Add(Ext: String; FileName: String): Integer; reintroduce;
     function FindFirstEnabledByName(Name: String): Integer;
     function LoadModule(const FileName: String): TWfxModule;
+    function LoadedCount: Integer;
+    function LoadedModule(Index: Integer): TWfxModule;
 
     property Name[Index: Integer]: String read GetAName write SetAName;
     property FileName[Index: Integer]: String read GetAFileName write SetAFileName;
@@ -194,7 +199,8 @@ uses
 
   //DC
   uDCUtils, uLng, uGlobsPaths, uOSUtils, uWfxPluginUtil, DCOSUtils,
-  DCStrUtils, DCConvertEncoding, uComponentsSignature, uOSForms, uExtension;
+  DCStrUtils, DCConvertEncoding, uComponentsSignature, uOSForms, uExtension, uDebug,
+  uDebugRpcDiagnostics;
 
 const
   WfxIniFileName = 'wfx.ini';
@@ -653,6 +659,87 @@ begin
   end;
 end;
 
+function TWfxModule.WfxGetPreviewBitmap(var RemoteName: String;
+  AWidth, AHeight: Integer; out ABitmap: HBITMAP): Integer;
+var
+  NameW: UnicodeString;
+  NameA: AnsiString;
+  BufferW: array[0..MAX_PATH - 1] of WideChar;
+  BufferA: array[0..MAX_PATH - 1] of AnsiChar;
+  EntryPoint, RequestedName: String;
+  Called: Boolean;
+  StartedAt: QWord;
+begin
+  Result:= FS_BITMAP_NONE;
+  ABitmap:= 0;
+  EntryPoint:= EmptyStr;
+  RequestedName:= RemoteName;
+  Called:= False;
+  StartedAt:= GetTickCount64;
+  if (AWidth <= 0) or (AHeight <= 0) or
+     (AWidth > 8192) or (AHeight > 8192) then Exit;
+  FillChar(BufferW, SizeOf(BufferW), 0);
+  FillChar(BufferA, SizeOf(BufferA), 0);
+  EnterCriticalSection(FIconMutex);
+  try
+    { Prefer Unicode even when the plugin also exports its ANSI entry. }
+    if Assigned(FsGetPreviewBitmapW) then
+    begin
+      Called:= True;
+      EntryPoint:= 'FsGetPreviewBitmapW';
+      NameW:= CeUtf8ToUtf16(RemoteName);
+      if Length(NameW) >= MAX_PATH then Exit;
+      StrPLCopy(BufferW, NameW, MAX_PATH - 1);
+      Result:= FsGetPreviewBitmapW(BufferW, AWidth, AHeight, @ABitmap);
+      if BufferW[MAX_PATH - 1] <> #0 then
+      begin
+        Result:= FS_BITMAP_NONE;
+        Exit;
+      end;
+      if (Result and $FF) <> FS_BITMAP_NONE then
+        RemoteName:= CeUtf16ToUtf8(UnicodeString(PWideChar(@BufferW[0])));
+    end
+    else if Assigned(FsGetPreviewBitmap) then
+    begin
+      Called:= True;
+      EntryPoint:= 'FsGetPreviewBitmap';
+      NameA:= CeUtf8ToSys(RemoteName);
+      if Length(NameA) >= MAX_PATH then Exit;
+      StrPLCopy(BufferA, NameA, MAX_PATH - 1);
+      Result:= FsGetPreviewBitmap(BufferA, AWidth, AHeight, @ABitmap);
+      if BufferA[MAX_PATH - 1] <> #0 then
+      begin
+        Result:= FS_BITMAP_NONE;
+        Exit;
+      end;
+      if (Result and $FF) <> FS_BITMAP_NONE then
+        RemoteName:= CeSysToUtf8(StrPas(PAnsiChar(@BufferA[0])));
+    end;
+  finally
+    LeaveCriticalSection(FIconMutex);
+    if Called then
+    begin
+      DebugRpcRecord('wfx', 'callback', RequestedName, IntToStr(Result),
+        EmptyStr, GetTickCount64 - StartedAt, Result,
+        EntryPoint + ' bitmap=' + IntToStr(PtrUInt(ABitmap)) +
+        ' name=' + RemoteName);
+      if (Result and $FF) = FS_BITMAP_EXTRACTED then
+      begin
+        if ABitmap <> 0 then
+          DebugRpcRecord('wfx', 'bitmap.return', RequestedName, 'hbitmap',
+            EmptyStr, 0, Result, 'handle=' + IntToStr(PtrUInt(ABitmap)))
+        else
+          DebugRpcRecord('wfx', 'bitmap.return', RequestedName, 'null',
+            'plugin returned FS_BITMAP_EXTRACTED with null HBITMAP', 0,
+            Result);
+      end;
+    end;
+  end;
+  if Called then
+    DCDebug(['RemoteThumbnailHostBridge callback=', EntryPoint,
+      ' status=', Result, ' bitmap=', PtrUInt(ABitmap), ' name=', RemoteName]);
+end;
+
 constructor TWFXModule.Create;
 begin
   inherited;
@@ -761,6 +848,7 @@ begin
     FsSetTimeW := TFsSetTimeW (GetProcAddress(AHandle,'FsSetTimeW'));
     FsStatusInfoW := TFsStatusInfoW(GetProcAddress(AHandle,'FsStatusInfoW'));
     FsExtractCustomIconW := TFsExtractCustomIconW(GetProcAddress(AHandle,'FsExtractCustomIconW'));
+    FsGetPreviewBitmapW := TFsGetPreviewBitmapW(GetProcAddress(AHandle,'FsGetPreviewBitmapW'));
     FsGetLocalNameW := TFsGetLocalNameW(GetProcAddress(AHandle,'FsGetLocalNameW'));
     //--------------------------
     FsContentGetDefaultViewW := TFsContentGetDefaultViewW(GetProcAddress(AHandle,'FsContentGetDefaultViewW'));
@@ -774,6 +862,10 @@ begin
     VFSInit;
 
     FModuleHandle := AHandle;
+    DebugRpcRecord('plugin', 'loaded', FModulePath, 'loaded', EmptyStr, 0,
+      PtrUInt(FModuleHandle), 'FsGetPreviewBitmapW=' +
+      BoolToStr(Assigned(FsGetPreviewBitmapW), True) +
+      ' FsGetPreviewBitmap=' + BoolToStr(Assigned(FsGetPreviewBitmap), True));
   finally
     LeaveCriticalSection(FMutex);
   end;
@@ -848,6 +940,7 @@ begin
     FsSetTimeW := nil;
     FsStatusInfoW := nil;
     FsExtractCustomIconW := nil;
+    FsGetPreviewBitmapW := nil;
     FsGetLocalNameW := nil;
     //---------------------
     FsContentGetDefaultViewW := nil;
@@ -1055,6 +1148,17 @@ begin
     if Enabled[Result] and (DoCompareText(Names[Result], Name) = 0) then
       Exit;
   Result := -1;
+end;
+
+function TWFXModuleList.LoadedCount: Integer;
+begin
+  Result:= FModuleList.Count;
+end;
+
+function TWFXModuleList.LoadedModule(Index: Integer): TWfxModule;
+begin
+  if (Index < 0) or (Index >= FModuleList.Count) then Exit(nil);
+  Result:= TWfxModule(FModuleList.Objects[Index]);
 end;
 
 function TWFXModuleList.LoadModule(const FileName: String): TWfxModule;

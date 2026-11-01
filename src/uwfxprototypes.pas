@@ -10,6 +10,8 @@ uses
 {$IFDEF MSWINDOWS}{$CALLING STDCALL}{$ELSE}{$CALLING CDECL}{$ENDIF}
 
 type
+  PWfxBitmapHandle = ^HBITMAP;
+
 { File system plugins API (version 2.0) for TC }
 {R}  //Realized
 {U}  //Unrealized
@@ -35,7 +37,7 @@ type
 {U}  TFsExtractCustomIcon=function(RemoteName:pansichar;ExtractFlags:integer; TheIcon: PWfxIcon):integer;
 {R}  TFsRenMovFile= function(OldName,NewName:pansichar;  Move, OverWrite:bool; ri:pRemoteInfo):Integer;
 {U}  TFsDisconnect = function (DisconnectRoot:pansichar):bool;
-{U}  TFsGetPreviewBitmap = function ( RemoteName:pansichar; width,height:integer; ReturnedBitmap: PWfxIcon):integer;
+{U}  TFsGetPreviewBitmap = function ( RemoteName:pansichar; width,height:integer; ReturnedBitmap: PWfxBitmapHandle):integer;
 {R}  TFsLinksToLocalFiles = function:bool;
 {R}  TFsGetLocalName = function (RemoteName:pansichar;maxlen:integer):bool;
 //------------------------------------------------------
@@ -69,7 +71,7 @@ type
      TFsSetTimeW = function(RemoteName:pwidechar;CreationTime,LastAccessTime, LastWriteTime:PWfxFileTime):bool;
      TFsStatusInfoW = procedure(RemoteDir:pwidechar;InfoStartEnd,InfoOperation:integer);
      TFsExtractCustomIconW = function(RemoteName:pwidechar;ExtractFlags:integer; TheIcon: PWfxIcon):integer;
-     TFsGetPreviewBitmapW = function(RemoteName:pwidechar;width,height:integer; ReturnedBitmap: PWfxIcon):integer;
+     TFsGetPreviewBitmapW = function(RemoteName:pwidechar;width,height:integer; ReturnedBitmap: PWfxBitmapHandle):integer;
      TFsGetLocalNameW = function(RemoteName:pwidechar;maxlen:integer):bool;
 //------------------------------------------------------
      TFsContentGetValueW = function(FileName:pwidechar;FieldIndex,UnitIndex:integer;FieldValue:pbyte; maxlen,flags:integer):integer;

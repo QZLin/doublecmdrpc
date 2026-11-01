@@ -6,7 +6,7 @@ unit uWfxPluginFileSource;
 interface
 
 uses
-  Classes, SysUtils, URIParser, Graphics, uWFXModule, WfxPlugin,
+  Classes, SysUtils, Types, URIParser, {$IFDEF MSWINDOWS}Windows, {$ENDIF}SyncObjs, Graphics, uWFXModule, WfxPlugin,
   uFile, uFileSourceProperty, uFileSourceOperationTypes,
   uFileProperty, uFileSource, uFileSourceOperation;
 
@@ -27,9 +27,12 @@ type
 
     function GetPluginNumber: LongInt;
     function GetWfxModule: TWfxModule;
+    function GetPluginRootName: String;
+    function GetPendingPreviewPaths: TStringArray;
 
     property PluginNumber: LongInt read GetPluginNumber;
     property WfxModule: TWfxModule read GetWfxModule;
+    property PluginRootName: String read GetPluginRootName;
   end;
 
   { TWfxPluginFileSource }
@@ -60,8 +63,21 @@ type
     FPluginNumber: LongInt;
     FCallbackDataClass: TCallbackDataClass;
 
+    FPreviewLock: SyncObjs.TCriticalSection;
+    FPendingPreviewPaths: TStringList;
+    FPreviewNotificationQueued: Boolean;
+    FInvalidateAllPreviews: Boolean;
+    FPreviewRegistered: Boolean;
+
+    procedure RememberPreviewMiss(const APath: String);
+    procedure ForgetPreviewMiss(const APath: String);
+    procedure QueuePreviewInvalidation(AInvalidateAll: Boolean);
+    procedure DeliverPreviewInvalidation(Data: PtrInt);
+
     function GetPluginNumber: LongInt;
     function GetWfxModule: TWfxModule;
+    function GetPluginRootName: String;
+    function GetPendingPreviewPaths: TStringArray;
 
     function CreateConnection: TFileSourceConnection;
     procedure CreateConnections;
@@ -133,6 +149,10 @@ type
     function CreateDirectory(const Path: String): Boolean; override;
     function GetDefaultView(out DefaultView: TFileSourceFields): Boolean; override;
 
+    function SupportsPreviewBitmap: Boolean; override;
+    function GetPreviewBitmap(aFile: TFile; const ASize: TSize;
+      out ABitmap: TBitmap; out ACacheKey: String; out ACacheable: Boolean): Boolean; override;
+
     function GetCustomIcon(aFile: TFile; AIconSize: Integer; out AIcon: TBitmap): PtrInt; override;
     function GetCustomIcon(const path: String; const iconSize: Integer): TBitmap; override;
 
@@ -171,26 +191,51 @@ threadvar
 implementation
 
 uses
-  LazUTF8, FileUtil, StrUtils, {} LCLType, uShowMsg, {} uGlobs, DCStrUtils, uDCUtils, uLog,
-  uDebug, uLng, uCryptProc, DCFileAttributes, uConnectionManager, contnrs, syncobjs, fMain,
+  LazUTF8, FileUtil, StrUtils, Forms, {} LCLType, uShowMsg, {} uGlobs, DCStrUtils, uDCUtils, uLog,
+  uDebug, uLng, uCryptProc, DCFileAttributes, uConnectionManager, contnrs, fMain,
   uWfxPluginCopyInOperation, uWfxPluginCopyOutOperation,  uWfxPluginMoveOperation, uVfsModule,
   uWfxPluginExecuteOperation, uWfxPluginListOperation, uWfxPluginCreateDirectoryOperation,
   uWfxPluginDeleteOperation, uWfxPluginSetFilePropertyOperation, uWfxPluginCopyOperation,
   DCConvertEncoding, uWfxPluginCalcStatisticsOperation, uFileFunctions, uPixMapManager,
-  uFileSourceUtil;
+  uDebugRpcDiagnostics,
+  uFileSourceUtil
+  {$IFDEF MSWINDOWS}, uBitmap, DCClassesUtf8{$ENDIF};
 
 const
   connCopyIn      = 0;
   connCopyOut     = 1;
   connDelete      = 2;
   connCopyMove    = 3;
+  PreviewReadySelected = 'RemoteThumbnailWFX.PreviewReady=selected';
+  PreviewReadyMetadata = 'RemoteThumbnailWFX.PreviewReady=metadata';
+  PreviewReadyAll = 'RemoteThumbnailWFX.PreviewReady=all';
 
 var
   // Always use appropriate lock to access these lists.
   WfxConnections: TObjectList; // store connections created by Wcx file sources
   WfxOperationsQueue: TObjectList; // store queued operations, use only under FOperationsQueueLock
-  WfxConnectionsLock: TCriticalSection; // used to synchronize access to connections
-  WfxOperationsQueueLock: TCriticalSection; // used to synchronize access to operations queue
+  WfxConnectionsLock: SyncObjs.TCriticalSection; // used to synchronize access to connections
+  WfxOperationsQueueLock: SyncObjs.TCriticalSection; // used to synchronize access to operations queue
+  WfxPreviewSources: TFPList;
+  WfxPreviewSourcesLock: SyncObjs.TCriticalSection;
+
+procedure DispatchPreviewInvalidation(PluginNr: Integer; InvalidateAll: Boolean);
+var
+  Index: Integer;
+  FileSource: TWfxPluginFileSource;
+begin
+  WfxPreviewSourcesLock.Acquire;
+  try
+    for Index:= 0 to WfxPreviewSources.Count - 1 do
+    begin
+      FileSource:= TWfxPluginFileSource(WfxPreviewSources[Index]);
+      if FileSource.FPluginNumber = PluginNr then
+        FileSource.QueuePreviewInvalidation(InvalidateAll);
+    end;
+  finally
+    WfxPreviewSourcesLock.Release;
+  end;
+end;
 
 { CallBack functions }
 
@@ -263,6 +308,23 @@ var
   LogMsgType: TLogMsgType = lmtInfo;
   CallbackDataClass: TCallbackDataClass;
 Begin
+  DebugRpcRecordPluginLog(MsgType, LogString);
+  if LogString = PreviewReadySelected then
+  begin
+    DebugRpcRecord('wfx', 'preview.ready', EmptyStr, 'selected', EmptyStr,
+      0, PluginNr, LogString);
+    DispatchPreviewInvalidation(PluginNr, False);
+    DCDebug(['RemoteThumbnailHostBridge completion=', LogString]);
+    Exit;
+  end
+  else if (LogString = PreviewReadyMetadata) or (LogString = PreviewReadyAll) then
+  begin
+    DebugRpcRecord('wfx', 'preview.ready', EmptyStr, 'all', EmptyStr,
+      0, PluginNr, LogString);
+    DispatchPreviewInvalidation(PluginNr, True);
+    DCDebug(['RemoteThumbnailHostBridge completion=', LogString]);
+    Exit;
+  end;
   sMsg:= rsMsgLogInfo;
   bLogWindow:= frmMain.seLogWindow.Visible;
   bLogFile:= ((log_vfs_op in gLogOptions) and (log_info in gLogOptions));
@@ -475,6 +537,14 @@ var
   AFlags: Integer;
 begin
   inherited Create;
+  FPreviewLock:= SyncObjs.TCriticalSection.Create;
+  FPendingPreviewPaths:= TStringList.Create;
+  FPendingPreviewPaths.Sorted:= True;
+  FPendingPreviewPaths.CaseSensitive:= True;
+  FPendingPreviewPaths.Duplicates:= dupIgnore;
+  FPreviewNotificationQueued:= False;
+  FInvalidateAllPreviews:= False;
+  FPreviewRegistered:= False;
   FPluginNumber:= -1;
   FCallbackDataClass:= nil;
   FModuleFileName:= aModuleFileName;
@@ -488,7 +558,10 @@ begin
   begin
     FPluginNumber:= WfxOperationList.IndexOf(FPluginRootName);
     if FPluginNumber >= 0 then
-      WfxOperationList.Objects[FPluginNumber]:= TCallbackDataClass.Create(Self)
+    begin
+      FCallbackDataClass:= TCallbackDataClass.Create(Self);
+      WfxOperationList.Objects[FPluginNumber]:= FCallbackDataClass;
+    end
     else begin
       FCallbackDataClass:= TCallbackDataClass.Create(Self);
       FPluginNumber:= WfxOperationList.AddObject(FPluginRootName, FCallbackDataClass);
@@ -523,11 +596,32 @@ begin
   FOperationsClasses[fsoExecute]         := TWfxPluginExecuteOperation.GetOperationClass;
 
   CreateConnections;
+  WfxPreviewSourcesLock.Acquire;
+  try
+    WfxPreviewSources.Add(Self);
+    FPreviewRegistered:= True;
+  finally
+    WfxPreviewSourcesLock.Release;
+  end;
 end;
 
 destructor TWfxPluginFileSource.Destroy;
 begin
-  if (FPluginNumber >= 0) and (FPluginNumber < WfxOperationList.Count) then
+  if FPreviewRegistered then
+  begin
+    WfxPreviewSourcesLock.Acquire;
+    try
+      WfxPreviewSources.Remove(Self);
+      FPreviewRegistered:= False;
+    finally
+      WfxPreviewSourcesLock.Release;
+    end;
+  end;
+  Application.RemoveAsyncCalls(Self);
+  FreeAndNil(FPendingPreviewPaths);
+  FreeAndNil(FPreviewLock);
+  if (FPluginNumber >= 0) and (FPluginNumber < WfxOperationList.Count) and
+     (WfxOperationList.Objects[FPluginNumber] = FCallbackDataClass) then
     WfxOperationList.Objects[FPluginNumber]:= nil;
   FreeAndNil(FCallbackDataClass);
   inherited Destroy;
@@ -780,6 +874,26 @@ end;
 function TWfxPluginFileSource.GetWfxModule: TWfxModule;
 begin
   Result := FWFXModule;
+end;
+
+function TWfxPluginFileSource.GetPluginRootName: String;
+begin
+  Result:= FPluginRootName;
+end;
+
+function TWfxPluginFileSource.GetPendingPreviewPaths: TStringArray;
+var
+  Index: Integer;
+begin
+  Result:= nil;
+  FPreviewLock.Acquire;
+  try
+    SetLength(Result, FPendingPreviewPaths.Count);
+    for Index:= 0 to FPendingPreviewPaths.Count - 1 do
+      Result[Index]:= FPendingPreviewPaths[Index];
+  finally
+    FPreviewLock.Release;
+  end;
 end;
 
 procedure TWfxPluginFileSource.FillAndCount(Files: TFiles; CountDirs: Boolean;
@@ -1055,6 +1169,233 @@ begin
   Result:= FWFXModule.WfxContentGetDefaultView(DefaultView);
 end;
 
+procedure TWfxPluginFileSource.RememberPreviewMiss(const APath: String);
+begin
+  if APath = EmptyStr then Exit;
+  FPreviewLock.Acquire;
+  try
+    if FPendingPreviewPaths.IndexOf(APath) < 0 then
+      FPendingPreviewPaths.Add(APath);
+  finally
+    FPreviewLock.Release;
+  end;
+end;
+
+procedure TWfxPluginFileSource.ForgetPreviewMiss(const APath: String);
+var
+  Index: Integer;
+begin
+  FPreviewLock.Acquire;
+  try
+    Index:= FPendingPreviewPaths.IndexOf(APath);
+    if Index >= 0 then FPendingPreviewPaths.Delete(Index);
+  finally
+    FPreviewLock.Release;
+  end;
+end;
+
+procedure TWfxPluginFileSource.QueuePreviewInvalidation(AInvalidateAll: Boolean);
+var
+  QueueCall: Boolean;
+begin
+  QueueCall:= False;
+  FPreviewLock.Acquire;
+  try
+    if AInvalidateAll then FInvalidateAllPreviews:= True;
+    if (FInvalidateAllPreviews or (FPendingPreviewPaths.Count > 0)) and
+       not FPreviewNotificationQueued then
+    begin
+      FPreviewNotificationQueued:= True;
+      QueueCall:= True;
+    end;
+  finally
+    FPreviewLock.Release;
+  end;
+  if QueueCall then
+    Application.QueueAsyncCall(@DeliverPreviewInvalidation, 0);
+end;
+
+procedure TWfxPluginFileSource.DeliverPreviewInvalidation({%H-}Data: PtrInt);
+var
+  Index: Integer;
+  InvalidateAll: Boolean;
+  Paths: TPathsArray;
+  Params: TFileSourceEventParams;
+begin
+  FPreviewLock.Acquire;
+  try
+    InvalidateAll:= FInvalidateAllPreviews;
+    if not InvalidateAll then
+    begin
+      SetLength(Paths, FPendingPreviewPaths.Count);
+      for Index:= 0 to FPendingPreviewPaths.Count - 1 do
+        Paths[Index]:= FPendingPreviewPaths[Index];
+    end;
+    FPendingPreviewPaths.Clear;
+    FInvalidateAllPreviews:= False;
+    FPreviewNotificationQueued:= False;
+  finally
+    FPreviewLock.Release;
+  end;
+  if not InvalidateAll and (Length(Paths) = 0) then Exit;
+  Params.eventType:= TFileSourceEventType.previewInvalidated;
+  Params.fs:= Self;
+  Params.paths:= Paths;
+  eventNotify(Params);
+  if Length(Paths) = 0 then
+    DebugRpcRecord('thumbnail', 'invalidate', EmptyStr, 'all', EmptyStr, 0,
+      Length(Paths), 'plugin preview-ready')
+  else
+    for Index:= 0 to High(Paths) do
+      DebugRpcRecord('thumbnail', 'invalidate', Paths[Index], 'path',
+        EmptyStr, 0, Length(Paths), 'plugin preview-ready');
+  DCDebug(['RemoteThumbnailHostBridge invalidated previews=', Length(Paths),
+    ' all=', InvalidateAll]);
+end;
+
+function TWfxPluginFileSource.SupportsPreviewBitmap: Boolean;
+begin
+  {$IFDEF MSWINDOWS}
+  Result:= Assigned(FWfxModule.FsGetPreviewBitmapW) or
+           Assigned(FWfxModule.FsGetPreviewBitmap);
+  {$ELSE}
+  Result:= False;
+  {$ENDIF}
+end;
+
+function TWfxPluginFileSource.GetPreviewBitmap(aFile: TFile; const ASize: TSize;
+  out ABitmap: TBitmap; out ACacheKey: String; out ACacheable: Boolean): Boolean;
+{$IFDEF MSWINDOWS}
+var
+  NativeBitmap: WfxPlugin.HBITMAP;
+  RemoteName, Drive: String;
+  Status, DriveKind: Integer;
+  Picture: TPicture;
+  Stream: TFileStreamEx;
+  DecodeStarted: QWord;
+  PreviewSource: String;
+{$ENDIF}
+begin
+  ABitmap:= nil;
+  ACacheKey:= EmptyStr;
+  ACacheable:= False;
+  Result:= SupportsPreviewBitmap;
+  if not Result then Exit;
+  {$IFDEF MSWINDOWS}
+  if aFile.IsDirectory then Exit;
+  NativeBitmap:= 0;
+  Status:= FS_BITMAP_NONE;
+  PreviewSource:= 'wfx_provider';
+  RemoteName:= aFile.FullPath;
+  try
+    try
+    Status:= FWfxModule.WfxGetPreviewBitmap(RemoteName, ASize.cx, ASize.cy, NativeBitmap);
+    PreviewSource:= EmptyStr;
+    case Status and $FF of
+      FS_BITMAP_NONE:
+        begin
+          RememberPreviewMiss(aFile.FullPath);
+          DebugRpcRecord('thumbnail', 'preview.miss', aFile.FullPath,
+            'wfx_none', EmptyStr, 0, Status);
+          Exit;
+        end;
+      FS_BITMAP_EXTRACTED:
+        begin
+          if NativeBitmap = 0 then
+          begin
+            DebugRpcRecord('wfx', 'bitmap.return', aFile.FullPath, 'invalid',
+              'plugin returned a null HBITMAP', 0, Status);
+            Exit;
+          end;
+          DecodeStarted:= GetTickCount64;
+          ABitmap:= BitmapCreateFromHBITMAP(NativeBitmap);
+          PreviewSource:= 'wfx_hbitmap';
+          {$IFDEF LCLWIN32}
+          { The Win32 wrapper takes ownership; its TBitmap will DeleteObject. }
+          NativeBitmap:= 0;
+          {$ENDIF}
+          if not Assigned(ABitmap) then
+          begin
+            DebugRpcRecord('wfx', 'bitmap.decode', aFile.FullPath, 'error',
+              'host could not wrap HBITMAP', GetTickCount64 - DecodeStarted,
+              Status, PreviewSource);
+            Exit;
+          end;
+          if (ABitmap.Width <= 0) or (ABitmap.Height <= 0) or
+             (ABitmap.Width > 8192) or (ABitmap.Height > 8192) then
+          begin
+            DebugRpcRecord('wfx', 'bitmap.decode', aFile.FullPath, 'error',
+              'HBITMAP dimensions are invalid', GetTickCount64 - DecodeStarted,
+              Status, PreviewSource);
+            FreeAndNil(ABitmap);
+            Exit;
+          end;
+        end;
+      FS_BITMAP_EXTRACT_YOURSELF:
+        begin
+          PreviewSource:= 'wfx_local_file';
+          DecodeStarted:= GetTickCount64;
+          { This path is a plugin-selected local preview, never the remote
+            original. Reject UNC/relative paths and mapped network drives. }
+          Drive:= ExtractFileDrive(RemoteName);
+          if (Length(Drive) <> 2) or (Drive[2] <> ':') or
+             (Length(RemoteName) < 3) or not (RemoteName[3] in ['\', '/']) then Exit;
+          DriveKind:= Windows.GetDriveTypeW(PWideChar(UTF8ToUTF16(Drive + '\')));
+          if not (DriveKind in [DRIVE_FIXED, DRIVE_REMOVABLE, DRIVE_RAMDISK, DRIVE_CDROM]) then Exit;
+          Stream:= TFileStreamEx.Create(RemoteName, fmOpenRead or fmShareDenyNone);
+          try
+            if (Stream.Size <= 0) or (Stream.Size > 16 * 1024 * 1024) then Exit;
+            Picture:= TPicture.Create;
+            try
+              Picture.LoadFromStreamWithFileExt(Stream, ExtractFileExt(RemoteName));
+              if (Picture.Width <= 0) or (Picture.Height <= 0) or
+                 (Picture.Width > 4096) or (Picture.Height > 4096) then Exit;
+              ABitmap:= TBitmap.Create;
+              ABitmap.Assign(Picture.Graphic);
+            finally
+              Picture.Free;
+            end;
+          finally
+            Stream.Free;
+          end;
+        end;
+      { ANDDELETE and unknown values are deliberately not decoded/deleted. This
+        read-only bridge never unlinks a shared PC cache object. }
+      else Exit;
+    end;
+    if Assigned(ABitmap) then
+    begin
+      ForgetPreviewMiss(aFile.FullPath);
+      ACacheable:= (Status and FS_BITMAP_CACHE) <> 0;
+      { Qualify plugin-provided device/UUID/profile/hash identity, not mtime. }
+      ACacheKey:= FModuleFileName + #0 + FPluginRootName + #0 + RemoteName;
+      DebugRpcRecord('wfx', 'bitmap.decode', aFile.FullPath, 'success',
+        EmptyStr, GetTickCount64 - DecodeStarted, Status, PreviewSource);
+      if PreviewSource = 'wfx_local_file' then
+        DebugRpcRecord('wfx', 'bitmap.return', aFile.FullPath,
+          'host_bitmap', EmptyStr, 0, Status, PreviewSource);
+      DebugRpcRecord('thumbnail', 'host.receive', aFile.FullPath,
+        PreviewSource, EmptyStr, 0, Status, 'cacheable=' +
+        BoolToStr(ACacheable, True));
+    end;
+  except
+    on E: Exception do
+    begin
+      DebugRpcRecord('wfx', 'bitmap.decode', aFile.FullPath, 'error',
+        E.Message, 0, Status, PreviewSource);
+      FreeAndNil(ABitmap);
+      ACacheKey:= EmptyStr;
+      ACacheable:= False;
+    end;
+  end;
+  { Other Windows widgetsets copied pixels; rejected/exceptional handles
+    remain owned here. Never use both a wrapper destructor and DeleteObject. }
+  finally
+    if NativeBitmap <> 0 then Windows.DeleteObject(NativeBitmap);
+  end;
+  {$ENDIF}
+end;
+
 function TWfxPluginFileSource.GetCustomIcon(aFile: TFile; AIconSize: Integer;
   out AIcon: TBitmap): PtrInt;
 var
@@ -1321,15 +1662,19 @@ begin
 end;
 
 initialization
+  WfxPreviewSources:= TFPList.Create;
+  WfxPreviewSourcesLock:= SyncObjs.TCriticalSection.Create;
   WfxOperationList:= TStringList.Create;
   WfxConnections := TObjectList.Create(True); // True = destroy objects when destroying list
-  WfxConnectionsLock := TCriticalSection.Create;
+  WfxConnectionsLock := SyncObjs.TCriticalSection.Create;
   WfxOperationsQueue := TObjectList.Create(False); // False = don't destroy operations (only store references)
-  WfxOperationsQueueLock := TCriticalSection.Create;
+  WfxOperationsQueueLock := SyncObjs.TCriticalSection.Create;
   RegisterVirtualFileSource('WfxPlugin', '', TWfxPluginFileSource, False);
 
 finalization
   FreeAndNil(WfxOperationList);
+  FreeAndNil(WfxPreviewSources);
+  FreeAndNil(WfxPreviewSourcesLock);
   FreeAndNil(WfxConnections);
   FreeAndNil(WfxConnectionsLock);
   FreeAndNil(WfxOperationsQueue);

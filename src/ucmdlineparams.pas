@@ -14,6 +14,7 @@ type
     RightPath: array[0..1023] of AnsiChar;
     ActivePanelPath: array[0..1023] of AnsiChar;
     Client: Boolean;
+    DebugRpc: Boolean;
     Servername: array[0..1023] of AnsiChar;
   end;
 
@@ -42,7 +43,7 @@ procedure ProcessCommandLineParams;
 var
   Option: AnsiChar = #0;
   OptionIndex: LongInt = 0;
-  Options: array[1..5] of TOption;
+  Options: array[1..6] of TOption;
   OptionUnknown: String;
 begin
   FillChar(Options, SizeOf(Options), #0);
@@ -68,6 +69,10 @@ begin
   with Options[5] do
   begin
     Name:= 'no-splash';
+  end;
+  with Options[6] do
+  begin
+    Name:= 'debug-rpc';
   end;
   FillChar(CommandLineParams, SizeOf(TCommandLineParams), #0);
   repeat
@@ -101,6 +106,10 @@ begin
             5:
               begin
                 CommandLineParams.NoSplash:= True;
+              end;
+            6:
+              begin
+                CommandLineParams.DebugRpc:= True;
               end;
           end;
         end;

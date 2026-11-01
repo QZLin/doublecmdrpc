@@ -5,7 +5,7 @@ unit uThumbnails;
 interface
 
 uses
-  Classes, SysUtils, Graphics, Controls, Types, fgl, DCClassesUtf8, uFile;
+  Classes, SysUtils, SyncObjs, Graphics, Controls, Types, fgl, DCClassesUtf8, uFile, uFileSource;
 
 type
 
@@ -28,6 +28,9 @@ type
     FFileName: String;
     FThumbPath: String;
     FProviderList: array of TCreatePreviewHandler; static;
+    FNativeCache: TStringList;
+    FNativeCacheBytes: Int64;
+    FNativeCacheLock: TCriticalSection;
   private
     procedure DoCreatePreviewText;
     function GetPreviewFileExt(const sFileExt: String): String;
@@ -38,6 +41,9 @@ type
     class function ReadFileName(const aThumb: String; out aFileName: String): Boolean;
   public
     constructor Create(const OwnerControl: TControl; const BackColor: TColor);
+    destructor Destroy; override;
+    procedure ClearNativeCache;
+    function CreatePreview(const aFile: TFile; const AFileSource: IFileSource): TBitmap;
     function CreatePreview(const aFile: TFile): TBitmap;
     function CreatePreview(const FullPathToFile: String): TBitmap;
     function RemovePreview(const FullPathToFile: String): Boolean;
@@ -53,7 +59,7 @@ implementation
 uses
   StreamEx, URIParser, MD5, FileUtil, LazFileUtils, Forms, uDCUtils, DCOSUtils, DCStrUtils,
   uDebug, uReSample, uGlobsPaths, uGlobs, uPixmapManager, uFileSystemFileSource,
-  uGraphics, uFileProcs;
+  uGraphics, uFileProcs, uDebugRpcDiagnostics;
 
 const
   ThumbSign: QWord = $0000235448554D42; // '#0 #0 # T H U M B'
@@ -195,11 +201,139 @@ end;
 
 constructor TThumbnailManager.Create(const OwnerControl: TControl; const BackColor: TColor);
 begin
+  FNativeCacheLock:= TCriticalSection.Create;
+  FNativeCache:= TStringList.Create;
+  FNativeCache.Sorted:= True;
+  FNativeCache.CaseSensitive:= True;
+  FNativeCacheBytes:= 0;
   FOwnerControl:= OwnerControl;
   FBackColor:= BackColor;
   FThumbPath:= gpThumbCacheDir;
   // If directory not exists then create it
   if not mbDirectoryExists(FThumbPath) then mbForceDirectory(FThumbPath);
+end;
+
+procedure TThumbnailManager.ClearNativeCache;
+var
+  Index: Integer;
+begin
+  FNativeCacheLock.Acquire;
+  try
+    for Index:= 0 to FNativeCache.Count - 1 do
+      FNativeCache.Objects[Index].Free;
+    FNativeCache.Clear;
+    FNativeCacheBytes:= 0;
+  finally
+    FNativeCacheLock.Release;
+  end;
+  DebugRpcRecord('thumbnail', 'cache.clear', EmptyStr, 'cleared', EmptyStr);
+end;
+
+destructor TThumbnailManager.Destroy;
+begin
+  ClearNativeCache;
+  FNativeCache.Free;
+  FNativeCacheLock.Free;
+  inherited Destroy;
+end;
+
+function TThumbnailManager.CreatePreview(const aFile: TFile;
+  const AFileSource: IFileSource): TBitmap;
+const
+  MaxEntries = 128;
+  MaxBytes = 64 * 1024 * 1024;
+var
+  CacheKey: String;
+  Cacheable: Boolean;
+  Index: Integer;
+  Bytes: Int64;
+  Cached: TBitmap;
+  Factor: Double;
+  StartedAt: QWord;
+  ErrorText, PreviewSource: String;
+begin
+  { Query the native provider BEFORE the local path/mtime disk cache. A
+    handled miss must not enter any original-file loader or copy operation. }
+  if not AFileSource.SupportsPreviewBitmap then Exit(CreatePreview(aFile));
+  Result:= nil;
+  PreviewSource:= 'wfx_provider';
+  ErrorText:= EmptyStr;
+  StartedAt:= GetTickCount64;
+  DebugRpcBeginPreview(aFile.FullPath);
+  Factor:= findScaleFactorByControl(FOwnerControl);
+  FThumbBitmapSize.cx:= Round(gThumbSize.cx * Factor);
+  FThumbBitmapSize.cy:= Round(gThumbSize.cy * Factor);
+  try
+    try
+      if not AFileSource.GetPreviewBitmap(aFile, FThumbBitmapSize,
+         Result, CacheKey, Cacheable) then Exit;
+      if not Assigned(Result) then Exit;
+      if (Result.Width > FThumbBitmapSize.cx) or (Result.Height > FThumbBitmapSize.cy) then
+      begin
+        Cached:= CreatePreviewImage(Result);
+        Result.Free;
+        Result:= Cached;
+      end;
+      if not Cacheable or (CacheKey = EmptyStr) then Exit;
+      CacheKey+= #0 + IntToStr(FThumbBitmapSize.cx) + 'x' + IntToStr(FThumbBitmapSize.cy);
+      FNativeCacheLock.Acquire;
+      try
+        Index:= FNativeCache.IndexOf(CacheKey);
+        if Index >= 0 then
+        begin
+          { Probe every request so a changed digest cannot reuse a path-only hit. }
+          Result.Free;
+          Result:= TBitmap.Create;
+          Result.Assign(TBitmap(FNativeCache.Objects[Index]));
+          PreviewSource:= 'host_native_cache';
+          DebugRpcRecord('thumbnail', 'cache.hit', aFile.FullPath,
+            'native', EmptyStr, 0, Index);
+          Exit;
+        end;
+        DebugRpcRecord('thumbnail', 'cache.miss', aFile.FullPath,
+          'native', EmptyStr);
+        Bytes:= Int64(Result.Width) * Result.Height * 4;
+        if Bytes > MaxBytes then Exit;
+        while (FNativeCache.Count > 0) and
+              ((FNativeCache.Count >= MaxEntries) or (FNativeCacheBytes + Bytes > MaxBytes)) do
+        begin
+          Cached:= TBitmap(FNativeCache.Objects[0]);
+          Dec(FNativeCacheBytes, Int64(Cached.Width) * Cached.Height * 4);
+          Cached.Free;
+          FNativeCache.Delete(0);
+        end;
+        Cached:= TBitmap.Create;
+        try
+          Cached.Assign(Result);
+          FNativeCache.AddObject(CacheKey, Cached);
+          Inc(FNativeCacheBytes, Bytes);
+          DebugRpcRecord('thumbnail', 'cache.store', aFile.FullPath,
+            'native', EmptyStr, 0, Bytes);
+        except
+          Cached.Free;
+          raise;
+        end;
+      finally
+        FNativeCacheLock.Release;
+      end;
+    except
+      on E: Exception do
+      begin
+        ErrorText:= E.Message;
+        FreeAndNil(Result);
+      end;
+    end;
+  finally
+    if ErrorText <> EmptyStr then
+      DebugRpcEndPreview(aFile.FullPath, 'error', ErrorText,
+        GetTickCount64 - StartedAt)
+    else if Assigned(Result) then
+      DebugRpcEndPreview(aFile.FullPath, PreviewSource, EmptyStr,
+        GetTickCount64 - StartedAt)
+    else
+      DebugRpcEndPreview(aFile.FullPath, 'miss', EmptyStr,
+        GetTickCount64 - StartedAt);
+  end;
 end;
 
 function TThumbnailManager.RemovePreview(const FullPathToFile: String): Boolean;
