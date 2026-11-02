@@ -749,13 +749,10 @@ end;
 
 destructor TWFXModule.Destroy;
 begin
-  if IsLoaded then
-  begin
-    if Assigned(ContentPluginUnloading) then
-      ContentPluginUnloading;
-    if Assigned(ExtensionFinalize) then
-      ExtensionFinalize(nil);
-  end;
+  { UnloadModule invokes plug-in shutdown before FreeLibrary. Calling it here
+    keeps the callback outside the Windows loader lock and makes base cleanup
+    idempotent because the module handle is cleared. }
+  UnloadModule;
   inherited Destroy;
   DoneCriticalSection(FIconMutex);
 end;
@@ -879,6 +876,14 @@ begin
   try
     if FModuleHandle <> NilHandle then
     begin
+      { Plug-ins may own joinable worker threads. Invoke their explicit unload
+        hook before FreeLibrary, never from DLL finalization under loader lock. }
+      if Assigned(ContentPluginUnloading) then
+        ContentPluginUnloading;
+      ContentPluginUnloading:= nil;
+      if Assigned(ExtensionFinalize) then
+        ExtensionFinalize(nil);
+      ExtensionFinalize:= nil;
       AHandle:= FModuleHandle;
       FModuleHandle := NilHandle;
       FreeLibrary(AHandle);

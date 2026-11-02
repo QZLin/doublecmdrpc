@@ -13,7 +13,17 @@ type
 function GetRemoteThumbnailPreview(const AProviderPath, AConfigPath,
   AVolumeId, ACatalogPath: UnicodeString; APluginNumber: Integer;
   ALogProc: TLogProcW; AWidth, AHeight: Integer; AReturnedName: PWideChar;
-  AReturnedNameCapacity: Integer; AReturnedBitmap: PWfxBitmapHandle): Integer;
+  AReturnedNameCapacity: Integer; AReturnedBitmap: PWfxBitmapHandle;
+  const AConnectionJson: UnicodeString = ''): Integer;
+function RequestRemoteDirectoryIndex(const AProviderPath, AConfigPath,
+  AConnectionJson, AAction, ADirectory, AVolumeId, ACatalogPath, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): Boolean;
+function ResumeRemoteDirectoryIndex(const AProviderPath, AConfigPath, AConnectionJson, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): Boolean;
+function GetRemoteDirectoryStatus(const AProviderPath, AConfigPath, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): UnicodeString;
+function ConfigureRemoteThumbnailProvider(const AProviderPath, AConfigPath: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW; AParent: THandle): Integer;
 procedure ShutdownRemoteThumbnailProvider;
 
 implementation
@@ -31,6 +41,14 @@ type
     Width, Height: Integer; ReturnedName: PWideChar;
     ReturnedNameCapacity: Integer; ReturnedBitmap: PWfxBitmapHandle): Integer; stdcall;
   TProviderShutdown = procedure; stdcall;
+  TProviderGetConnectionPreviewW = function(ConnectionJson, VolumeId, CatalogFilePath: PWideChar;
+    Width, Height: Integer; ReturnedName: PWideChar; ReturnedNameCapacity: Integer;
+    ReturnedBitmap: PWfxBitmapHandle): Integer; stdcall;
+  TProviderDirectoryRequestW = function(ConnectionJson, Action, Directory, VolumeId,
+    CatalogPath, RequestId: PWideChar): Integer; stdcall;
+  TProviderDirectoryResumeW = function(ConnectionJson, RequestId: PWideChar): Integer; stdcall;
+  TProviderDirectoryStatusW = function(RequestId, ReturnedJson: PWideChar; Capacity: Integer): Integer; stdcall;
+  TProviderConfigureW = function(Parent: THandle): Integer; stdcall;
 
 const
   ProviderAbiVersion = 1;
@@ -43,6 +61,11 @@ var
   ProviderInitialize: TProviderInitializeW = nil;
   ProviderGetPreview: TProviderGetPreviewW = nil;
   ProviderShutdown: TProviderShutdown = nil;
+  ProviderConnectionPreview: TProviderGetConnectionPreviewW = nil;
+  ProviderDirectoryRequest: TProviderDirectoryRequestW = nil;
+  ProviderDirectoryResume: TProviderDirectoryResumeW = nil;
+  ProviderDirectoryStatus: TProviderDirectoryStatusW = nil;
+  ProviderConfigure: TProviderConfigureW = nil;
   LoadedProviderPath: UnicodeString = '';
   LoadedConfigPath: UnicodeString = '';
   LastError: UnicodeString = '';
@@ -105,6 +128,11 @@ begin
   ProviderInitialize:= nil;
   ProviderGetPreview:= nil;
   ProviderShutdown:= nil;
+  ProviderConnectionPreview:= nil;
+  ProviderDirectoryRequest:= nil;
+  ProviderDirectoryResume:= nil;
+  ProviderDirectoryStatus:= nil;
+  ProviderConfigure:= nil;
   if ProviderModule <> 0 then FreeLibrary(ProviderModule);
   ProviderModule:= 0;
   LoadedProviderPath:= '';
@@ -146,6 +174,11 @@ begin
     'RemoteThumbnailProviderGetPreviewW');
   Pointer(ProviderShutdown):= GetProcAddress(ProviderModule,
     'RemoteThumbnailProviderShutdown');
+  Pointer(ProviderConnectionPreview):= GetProcAddress(ProviderModule, 'RemoteThumbnailProviderGetPreviewForConnectionW');
+  Pointer(ProviderDirectoryRequest):= GetProcAddress(ProviderModule, 'RemoteThumbnailProviderDirectoryRequestW');
+  Pointer(ProviderDirectoryResume):= GetProcAddress(ProviderModule, 'RemoteThumbnailProviderDirectoryResumeW');
+  Pointer(ProviderDirectoryStatus):= GetProcAddress(ProviderModule, 'RemoteThumbnailProviderDirectoryStatusW');
+  Pointer(ProviderConfigure):= GetProcAddress(ProviderModule, 'RemoteThumbnailProviderConfigureW');
   if not Assigned(ProviderInitialize) or not Assigned(ProviderGetPreview) or
      not Assigned(ProviderShutdown) then
   begin
@@ -185,7 +218,8 @@ end;
 function GetRemoteThumbnailPreview(const AProviderPath, AConfigPath,
   AVolumeId, ACatalogPath: UnicodeString; APluginNumber: Integer;
   ALogProc: TLogProcW; AWidth, AHeight: Integer; AReturnedName: PWideChar;
-  AReturnedNameCapacity: Integer; AReturnedBitmap: PWfxBitmapHandle): Integer;
+  AReturnedNameCapacity: Integer; AReturnedBitmap: PWfxBitmapHandle;
+  const AConnectionJson: UnicodeString): Integer;
 begin
   Result:= FS_BITMAP_NONE;
   if Assigned(AReturnedBitmap) then AReturnedBitmap^:= 0;
@@ -197,7 +231,17 @@ begin
     if not EnsureProvider(AProviderPath, AConfigPath, APluginNumber, ALogProc) then
       Exit;
     try
-      Result:= ProviderGetPreview(PWideChar(AVolumeId), PWideChar(ACatalogPath),
+      if AConnectionJson <> '' then
+      begin
+        if not Assigned(ProviderConnectionPreview) then
+        begin
+          ReportError(ALogProc, APluginNumber, 'upgrade provider for connection-isolated thumbnail previews');
+          Exit;
+        end;
+        Result:= ProviderConnectionPreview(PWideChar(AConnectionJson), PWideChar(AVolumeId),
+          PWideChar(ACatalogPath), AWidth, AHeight, AReturnedName, AReturnedNameCapacity, AReturnedBitmap);
+      end
+      else Result:= ProviderGetPreview(PWideChar(AVolumeId), PWideChar(ACatalogPath),
         AWidth, AHeight, AReturnedName, AReturnedNameCapacity, AReturnedBitmap);
     except
       on E: Exception do
@@ -208,6 +252,92 @@ begin
         AReturnedBitmap^:= 0;
       end;
     end;
+  finally
+    ProviderLock.Release;
+  end;
+  {$ENDIF}
+end;
+
+function RequestRemoteDirectoryIndex(const AProviderPath, AConfigPath,
+  AConnectionJson, AAction, ADirectory, AVolumeId, ACatalogPath, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): Boolean;
+begin
+  Result:= False;
+  {$IFDEF MSWINDOWS}
+  ProviderLock.Acquire;
+  try
+    if not EnsureProvider(AProviderPath, AConfigPath, APluginNumber, ALogProc) then Exit;
+    if not Assigned(ProviderDirectoryRequest) then
+    begin
+      ReportError(ALogProc, APluginNumber, 'upgrade provider to enable directory index control');
+      Exit;
+    end;
+    try
+      Result:= ProviderDirectoryRequest(PWideChar(AConnectionJson), PWideChar(AAction),
+        PWideChar(ADirectory), PWideChar(AVolumeId), PWideChar(ACatalogPath), PWideChar(ARequestId)) = 1;
+    except
+      on E: Exception do ReportError(ALogProc, APluginNumber, UnicodeString(E.Message));
+    end;
+  finally
+    ProviderLock.Release;
+  end;
+  {$ENDIF}
+end;
+
+function ResumeRemoteDirectoryIndex(const AProviderPath, AConfigPath, AConnectionJson, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): Boolean;
+begin
+  Result:= False;
+  {$IFDEF MSWINDOWS}
+  ProviderLock.Acquire;
+  try
+    if not EnsureProvider(AProviderPath, AConfigPath, APluginNumber, ALogProc) then Exit;
+    if not Assigned(ProviderDirectoryResume) then
+    begin
+      ReportError(ALogProc, APluginNumber, 'upgrade provider for read-only original-request recovery');
+      Exit;
+    end;
+    try
+      Result:= ProviderDirectoryResume(PWideChar(AConnectionJson), PWideChar(ARequestId)) = 1;
+    except
+      on E: Exception do ReportError(ALogProc, APluginNumber, UnicodeString(E.Message));
+    end;
+  finally
+    ProviderLock.Release;
+  end;
+  {$ENDIF}
+end;
+
+function GetRemoteDirectoryStatus(const AProviderPath, AConfigPath, ARequestId: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW): UnicodeString;
+{$IFDEF MSWINDOWS}
+var Buffer: array[0..65535] of WideChar;
+{$ENDIF}
+begin
+  Result:= '{"ok":false,"status":"unavailable"}';
+  {$IFDEF MSWINDOWS}
+  ProviderLock.Acquire;
+  try
+    if not EnsureProvider(AProviderPath, AConfigPath, APluginNumber, ALogProc) or
+       not Assigned(ProviderDirectoryStatus) then Exit;
+    FillChar(Buffer, SizeOf(Buffer), 0);
+    if ProviderDirectoryStatus(PWideChar(ARequestId), @Buffer[0], Length(Buffer)) = 1 then
+      Result:= UnicodeString(PWideChar(@Buffer[0]));
+  finally
+    ProviderLock.Release;
+  end;
+  {$ENDIF}
+end;
+
+function ConfigureRemoteThumbnailProvider(const AProviderPath, AConfigPath: UnicodeString;
+  APluginNumber: Integer; ALogProc: TLogProcW; AParent: THandle): Integer;
+begin
+  Result:= FS_EXEC_ERROR;
+  {$IFDEF MSWINDOWS}
+  ProviderLock.Acquire;
+  try
+    if EnsureProvider(AProviderPath, AConfigPath, APluginNumber, ALogProc) and Assigned(ProviderConfigure) then
+      Result:= ProviderConfigure(AParent);
   finally
     ProviderLock.Release;
   end;
@@ -235,7 +365,8 @@ initialization
 
 finalization
   {$IFDEF MSWINDOWS}
-  ShutdownRemoteThumbnailProvider;
+  { Worker shutdown must happen through FsContentPluginUnloading before the
+    FTP DLL enters loader-lock finalization. Never join a thread here. }
   FreeAndNil(ProviderLock);
   {$ENDIF}
 

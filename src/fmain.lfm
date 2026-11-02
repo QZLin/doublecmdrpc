@@ -1242,6 +1242,30 @@ object frmMain: TfrmMain
       object mnuCmdSyncDirs: TMenuItem
         Action = actSyncDirs
       end
+      object mnuRemoteThumbnails: TMenuItem
+        Caption = 'PhotoThumbSync'
+        object miRemoteThumbnailIndexDirectory: TMenuItem
+          Action = actRemoteThumbnailIndexDirectory
+        end
+        object miRemoteThumbnailRemoveDirectoryIndex: TMenuItem
+          Action = actRemoteThumbnailRemoveDirectoryIndex
+        end
+        object miRemoteThumbnailRefreshDirectoryIndex: TMenuItem
+          Action = actRemoteThumbnailRefreshDirectoryIndex
+        end
+        object miRemoteThumbnailSeparator: TMenuItem
+          Caption = '-'
+        end
+        object miRemoteThumbnailIndexStatus: TMenuItem
+          Action = actRemoteThumbnailIndexStatus
+        end
+        object miRemoteThumbnailResumeDirectoryIndex: TMenuItem
+          Action = actRemoteThumbnailResumeDirectoryIndex
+        end
+        object miRemoteThumbnailConfigure: TMenuItem
+          Action = actRemoteThumbnailConfigure
+        end
+      end
       object miLine6: TMenuItem
         Caption = '-'
       end
@@ -2313,6 +2337,54 @@ object frmMain: TfrmMain
       GroupIndex = 6
       Hint = 'Columns View'
       OnExecute = actExecute
+    end
+    object actRemoteThumbnailIndexDirectory: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '索引目录缩略图'
+      Hint = '索引当前 SFTP 目录：SSH 通知 Termux，再通过 SFTP 缓存 WebP；不读取远程原图'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
+    end
+    object actRemoteThumbnailRemoveDirectoryIndex: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '移除索引目录缩略图'
+      Hint = '移除当前目录索引和本地缩略图引用；不删除远程原图'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
+    end
+    object actRemoteThumbnailRefreshDirectoryIndex: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '刷新索引目录缩略图'
+      Hint = '强制更新当前索引目录的 Bridge 缩略图和 SFTP 缓存；保留稳定照片 UUID'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
+    end
+    object actRemoteThumbnailIndexStatus: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '目录索引任务状态'
+      Hint = '只读查询最新目录任务；连接中断后不要重复提交原操作'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
+    end
+    object actRemoteThumbnailResumeDirectoryIndex: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '恢复原目录任务（只读）'
+      Hint = '输入原请求 UUID，仅查询和缓存已产生结果；绝不重发增加、移除或刷新'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
+    end
+    object actRemoteThumbnailConfigure: TAction
+      Tag = 1
+      Category = 'Active Panel'
+      Caption = '缩略图插件设置'
+      Hint = '配置插件本地缓存、Python 和超时；SFTP 参数由连接的 Thumbnails 设置提供'
+      OnExecute = actExecute
+      OnUpdate = RemoteThumbnailActionUpdate
     end
     object actThumbnailsView: TAction
       Tag = 1

@@ -44,7 +44,7 @@ uses
   fMain, uFilePanelSelect, uFileView, uFileViewNotebook, uFile, uFileSource,
   uColumnsFileView, uBriefFileView, uThumbFileView, uFileSourceUtil, uDCUtils,
   uGlobs, uDCVersion, uWfxModule, uWfxPluginFileSource,
-  uDebugRpcDiagnostics, uDebugRpcLogger, uDebugRpcRuntime;
+  uDebugRpcDiagnostics, uDebugRpcLogger, uDebugRpcRuntime, jsonparser, uRemoteThumbnailDirectory;
 
 const
   RpcInvalidParams = -32602;
@@ -453,7 +453,7 @@ var
   Notebook: TFileViewNotebook;
   Page: TFileViewPage;
   Panel: TFilePanelSelect;
-  Path, Mode, TestId, PhotoUuid, TargetPath, ModuleName: String;
+  Path, Mode, TestId, PhotoUuid, TargetPath, ModuleName, DirectoryAction, DirectoryRequestId: String;
   Files: TFiles;
   ActiveFile: TFile;
   Paths: TPathsArray;
@@ -465,7 +465,7 @@ var
   Loaded, LeftIdle, RightIdle: Boolean;
   ConfigPath: String;
 const
-  KnownExports: array[0..31] of String = (
+  KnownExports: array[0..33] of String = (
     'FsInit', 'FsInitW', 'FsFindFirst', 'FsFindFirstW', 'FsFindNext',
     'FsFindNextW', 'FsFindClose', 'FsGetFile', 'FsGetFileW', 'FsPutFile',
     'FsPutFileW', 'FsDisconnect', 'FsDisconnectW', 'FsGetDefRootName',
@@ -475,7 +475,8 @@ const
     'FsContentPluginUnloading', 'RemoteThumbnailDebugGetSnapshot',
     'RemoteThumbnailDebugGetEvents', 'RemoteThumbnailDebugReset',
     'RemoteThumbnailDebugSetTestId', 'FsExtractCustomIcon',
-    'FsExtractCustomIconW', 'FsGetLocalName', 'FsGetLocalNameW');
+    'FsExtractCustomIconW', 'FsGetLocalName', 'FsGetLocalNameW', 'RemoteThumbnailDirectoryStatusW',
+    'RemoteThumbnailDirectoryCapabilitiesW');
 begin
   Params:= ParamsObject(AParams);
 
@@ -632,6 +633,92 @@ begin
     Obj.Add('view_mode', ViewMode(View));
     Obj.Add('changed', Assigned(NewView));
     Exit(Obj);
+  end;
+
+  if AMethod = 'thumbnail.indexDirectory' then
+  begin
+    View:= ResolvePanel(Params, Panel, False);
+    DirectoryAction:= ParamString(Params, 'action', EmptyStr, True);
+    DirectoryRequestId:= ParamString(Params, 'request_id', EmptyStr);
+    if Assigned(Params) then
+      for Index:= 0 to Params.Count - 1 do
+        if (Params.Names[Index] <> 'panel') and (Params.Names[Index] <> 'action') and
+           (Params.Names[Index] <> 'request_id') then
+          raise EDebugRpcMethodError.Create(RpcInvalidParams, 'Unsupported directory-control parameter');
+    try
+      if not RequestRemoteThumbnailDirectory(View, DirectoryAction, DirectoryRequestId, frmMain.Handle) then
+        raise EDebugRpcMethodError.Create(RpcUnavailable,
+          'Directory task was rejected; check SFTP thumbnail index settings and plugin logs');
+    except
+      on E: EDebugRpcMethodError do raise;
+      on E: Exception do raise EDebugRpcMethodError.Create(RpcInvalidParams, E.Message);
+    end;
+    Obj:= TJSONObject.Create;
+    Obj.Add('panel', PanelName(Panel));
+    Obj.Add('action', DirectoryAction);
+    Obj.Add('directory', View.CurrentPath);
+    Obj.Add('request_id', DirectoryRequestId);
+    Obj.Add('accepted', True);
+    Obj.Add('asynchronous', True);
+    Exit(Obj);
+  end;
+
+  if AMethod = 'thumbnail.getDirectoryIndexCapabilities' then
+  begin
+    View:= ResolvePanel(Params, Panel, False);
+    if Assigned(Params) then
+      for Index:= 0 to Params.Count - 1 do
+        if Params.Names[Index] <> 'panel' then
+          raise EDebugRpcMethodError.Create(RpcInvalidParams, 'Unsupported directory-capability parameter');
+    Index:= RemoteThumbnailDirectoryCapabilities(View);
+    Obj:= TJSONObject.Create;
+    Obj.Add('panel', PanelName(Panel));
+    Obj.Add('capabilities', Index);
+    Obj.Add('configure', (Index and RemoteThumbnailCanConfigure) <> 0);
+    Obj.Add('status', (Index and RemoteThumbnailCanReadStatus) <> 0);
+    Obj.Add('mutate', (Index and RemoteThumbnailCanMutate) <> 0);
+    Obj.Add('resume', (Index and RemoteThumbnailCanResume) <> 0);
+    Obj.Add('network_access', False);
+    Exit(Obj);
+  end;
+
+  if AMethod = 'thumbnail.resumeDirectoryIndex' then
+  begin
+    View:= ResolvePanel(Params, Panel, False);
+    DirectoryRequestId:= ParamString(Params, 'request_id', EmptyStr, True);
+    if Assigned(Params) then
+      for Index:= 0 to Params.Count - 1 do
+        if (Params.Names[Index] <> 'panel') and (Params.Names[Index] <> 'request_id') then
+          raise EDebugRpcMethodError.Create(RpcInvalidParams, 'Recovery accepts only panel and original request_id');
+    try
+      if not ResumeRemoteThumbnailDirectory(View, DirectoryRequestId, frmMain.Handle) then
+        raise EDebugRpcMethodError.Create(RpcUnavailable, 'Original request is unavailable or belongs to another connection; no new command submitted');
+    except
+      on E: EDebugRpcMethodError do raise;
+      on E: Exception do raise EDebugRpcMethodError.Create(RpcInvalidParams, E.Message);
+    end;
+    Obj:= TJSONObject.Create;
+    Obj.Add('panel', PanelName(Panel));
+    Obj.Add('request_id', DirectoryRequestId);
+    Obj.Add('accepted', True);
+    Obj.Add('asynchronous', True);
+    Obj.Add('read_only_remote', True);
+    Exit(Obj);
+  end;
+
+  if AMethod = 'thumbnail.getDirectoryIndexStatus' then
+  begin
+    View:= ResolvePanel(Params, Panel, False);
+    DirectoryRequestId:= ParamString(Params, 'request_id', EmptyStr);
+    if Assigned(Params) then
+      for Index:= 0 to Params.Count - 1 do
+        if (Params.Names[Index] <> 'panel') and (Params.Names[Index] <> 'request_id') then
+          raise EDebugRpcMethodError.Create(RpcInvalidParams, 'Unsupported directory-status parameter');
+    try
+      Exit(GetJSON(RemoteThumbnailDirectoryStatus(View, DirectoryRequestId)));
+    except
+      on E: Exception do raise EDebugRpcMethodError.Create(RpcUnavailable, E.Message);
+    end;
   end;
 
   if AMethod = 'dc.refresh' then

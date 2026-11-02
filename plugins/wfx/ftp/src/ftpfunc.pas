@@ -63,6 +63,13 @@ type
     RemoteThumbnailVolumeId: AnsiString;
     RemoteThumbnailRemoteRoot: AnsiString;
     RemoteThumbnailCatalogRoot: AnsiString;
+    RemoteThumbnailIndexEnabled: Boolean;
+    RemoteThumbnailBackend: AnsiString;
+    RemoteThumbnailProtocolRoot: AnsiString;
+    RemoteThumbnailTermuxConfig: AnsiString;
+    RemoteThumbnailTermuxCli: AnsiString;
+    RemoteThumbnailKnownHosts: String;
+    RemoteThumbnailControlTransport: AnsiString;
   public
     constructor Create;
     procedure Assign(Connection: TConnection);
@@ -76,6 +83,8 @@ function FsFindNextW(Hdl: THandle; var FindData: TWin32FindDataW): BOOL; dcpcall
 function FsFindClose(Hdl: THandle): Integer; dcpcall; export;
 
 function FsExecuteFileW(MainWin: THandle; RemoteName, Verb: PWideChar): Integer; dcpcall; export;
+function RemoteThumbnailDirectoryCapabilitiesW(RemoteName: PWideChar): Integer; dcpcall; export;
+function RemoteThumbnailDirectoryStatusW(RequestId, ReturnedJson: PWideChar; Capacity: Integer): Integer; dcpcall; export;
 function FsRenMovFileW(OldName, NewName: PWideChar; Move, OverWrite: BOOL;
   RemoteInfo: pRemoteInfo): Integer; dcpcall; export;
 function FsGetFileW(RemoteName, LocalName: PWideChar; CopyFlags: Integer;
@@ -99,6 +108,7 @@ procedure FsGetDefRootName(DefRootName: PAnsiChar; MaxLen: Integer); dcpcall; ex
 procedure FsSetDefaultParams(dps: pFsDefaultParamStruct); dcpcall; export;
 procedure FsStatusInfoW(RemoteDir: PWideChar; InfoStartEnd, InfoOperation: Integer); dcpcall; export;
 function FsGetBackgroundFlags: Integer; dcpcall; export;
+procedure FsContentPluginUnloading; dcpcall; export;
 function FsExtractCustomIconW(RemoteName: PWideChar; ExtractFlags: Integer; TheIcon: PWfxIcon): Integer; dcpcall; export;
 { Network API }
 {
@@ -130,7 +140,7 @@ var
 implementation
 
 uses
-  IniFiles, StrUtils, FtpAdv, FtpUtils, FtpConfDlg, syncobjs, LazFileUtils,
+  IniFiles, StrUtils, fpjson, FtpAdv, FtpUtils, FtpConfDlg, syncobjs, LazFileUtils,
   LazUTF8, DCClassesUtf8, DCConvertEncoding, SftpSend, ScpSend, FtpProxy,
   FtpPropDlg, FtpLng, DCFileAttributes, RemoteThumbnailProvider;
 
@@ -203,6 +213,20 @@ begin
       'Connection' + sIndex + 'RemoteThumbnailRemoteRoot', '/sdcard/Pictures');
     Connection.RemoteThumbnailCatalogRoot := IniFile.ReadString('FTP',
       'Connection' + sIndex + 'RemoteThumbnailCatalogRoot', 'Pictures');
+    Connection.RemoteThumbnailIndexEnabled := IniFile.ReadBool('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailIndexEnabled', False);
+    Connection.RemoteThumbnailBackend := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailBackend', 'direct');
+    Connection.RemoteThumbnailProtocolRoot := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailProtocolRoot', '~/PhotoThumbSync/v1');
+    Connection.RemoteThumbnailTermuxConfig := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailTermuxConfig', '~/.config/photothumbsync/config.toml');
+    Connection.RemoteThumbnailTermuxCli := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailTermuxCli', '~/.local/bin/photothumbsync');
+    Connection.RemoteThumbnailKnownHosts := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailKnownHosts', Connection.RemoteThumbnailKnownHosts);
+    Connection.RemoteThumbnailControlTransport := IniFile.ReadString('FTP',
+      'Connection' + sIndex + 'RemoteThumbnailControlTransport', 'ssh');
     // add connection to connection list
     ConnectionList.AddObject(Connection.ConnectionName, Connection);
   end;
@@ -256,6 +280,13 @@ begin
       Connection.RemoteThumbnailRemoteRoot);
     IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailCatalogRoot',
       Connection.RemoteThumbnailCatalogRoot);
+    IniFile.WriteBool('FTP', 'Connection' + sIndex + 'RemoteThumbnailIndexEnabled', Connection.RemoteThumbnailIndexEnabled);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailBackend', Connection.RemoteThumbnailBackend);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailProtocolRoot', Connection.RemoteThumbnailProtocolRoot);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailTermuxConfig', Connection.RemoteThumbnailTermuxConfig);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailTermuxCli', Connection.RemoteThumbnailTermuxCli);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailKnownHosts', Connection.RemoteThumbnailKnownHosts);
+    IniFile.WriteString('FTP', 'Connection' + sIndex + 'RemoteThumbnailControlTransport', Connection.RemoteThumbnailControlTransport);
   end;
   IniFile.WriteString('RemoteThumbnail', 'ProviderPath', RemoteThumbnailProviderPath);
   IniFile.WriteString('RemoteThumbnail', 'ConfigPath', RemoteThumbnailConfigPath);
@@ -617,7 +648,7 @@ var
   Index: Integer;
   Guarded: UnicodeString;
 begin
-  Result:= Trim(APath);
+  Result:= APath;
   for Index:= 1 to Length(Result) do
     if Result[Index] = '\' then Result[Index]:= '/';
   Index:= Pos('//', Result);
@@ -638,17 +669,18 @@ begin
 end;
 
 function BuildRemoteThumbnailRequest(RemoteName: PWideChar;
-  out ProviderPath, ConfigPath, VolumeId, CatalogPath: UnicodeString): Boolean;
+  out ProviderPath, ConfigPath, VolumeId, CatalogPath, ConnectionJson,
+  RemoteDirectory: UnicodeString; RequireControl: Boolean = False;
+  ConnectionOnly: Boolean = False): Boolean;
 var
-  RawPath, ConnectionName, RemotePath, RemoteRoot, CatalogRoot, Tail: UnicodeString;
+  RawPath, ConnectionName, RemoteRoot, CatalogRoot, Tail: UnicodeString;
   Separator, ConnectionIndex: Integer;
   Connection: TConnection;
+  Description: TJSONObject;
 begin
   Result:= False;
-  ProviderPath:= '';
-  ConfigPath:= '';
-  VolumeId:= '';
-  CatalogPath:= '';
+  ProviderPath:= ''; ConfigPath:= ''; VolumeId:= ''; CatalogPath:= '';
+  ConnectionJson:= ''; RemoteDirectory:= '';
   if RemoteName = nil then Exit;
   RawPath:= UnicodeString(RemoteName);
   for Separator:= 1 to Length(RawPath) do
@@ -657,37 +689,82 @@ begin
   Separator:= Pos('/', RawPath);
   if Separator <= 1 then Exit;
   ConnectionName:= Copy(RawPath, 1, Separator - 1);
-  RemotePath:= NormalizeRemoteThumbnailPath('/' + Copy(RawPath, Separator + 1,
-    MaxInt), True);
-  if RemotePath = '' then Exit;
-
+  RemoteDirectory:= NormalizeRemoteThumbnailPath('/' + Copy(RawPath, Separator + 1, MaxInt), True);
+  if RemoteDirectory = '' then Exit;
   ListLock.Acquire;
   try
     ConnectionIndex:= ConnectionList.IndexOf(UTF16ToUTF8(ConnectionName));
     if ConnectionIndex < 0 then Exit;
     Connection:= TConnection(ConnectionList.Objects[ConnectionIndex]);
-    if not Connection.RemoteThumbnailEnabled then Exit;
+    if RequireControl and not Connection.RemoteThumbnailIndexEnabled then Exit;
+    if RequireControl or ConnectionOnly then
+    begin
+      if not Connection.OpenSSH or Connection.OnlySCP or (Connection.Proxy <> '') then Exit;
+      if not Connection.AgentSSH and (Connection.PrivateKey = '') then Exit;
+    end
+    else if not Connection.RemoteThumbnailEnabled then Exit;
     ProviderPath:= UTF8ToUTF16(RemoteThumbnailProviderPath);
     ConfigPath:= UTF8ToUTF16(RemoteThumbnailConfigPath);
     VolumeId:= UTF8ToUTF16(Connection.RemoteThumbnailVolumeId);
     RemoteRoot:= UTF8ToUTF16(Connection.RemoteThumbnailRemoteRoot);
     CatalogRoot:= UTF8ToUTF16(Connection.RemoteThumbnailCatalogRoot);
+    Description:= TJSONObject.Create;
+    try
+      Description.Add('host', Connection.Host);
+      Description.Add('port', StrToIntDef(Connection.Port, 22));
+      Description.Add('username', Connection.UserName);
+      Description.Add('private_key', Connection.PrivateKey);
+      Description.Add('public_key', Connection.PublicKey);
+      Description.Add('allow_agent', Connection.AgentSSH);
+      Description.Add('known_hosts', Connection.RemoteThumbnailKnownHosts);
+      Description.Add('backend', Connection.RemoteThumbnailBackend);
+      Description.Add('transport', Connection.RemoteThumbnailControlTransport);
+      Description.Add('remote_protocol_root', Connection.RemoteThumbnailProtocolRoot);
+      Description.Add('remote_config', Connection.RemoteThumbnailTermuxConfig);
+      Description.Add('termux_cli', Connection.RemoteThumbnailTermuxCli);
+      ConnectionJson:= UTF8ToUTF16(Description.AsJSON);
+    finally
+      Description.Free;
+    end;
   finally
     ListLock.Release;
   end;
-
+  if ConnectionOnly then Exit(True);
   RemoteRoot:= NormalizeRemoteThumbnailPath(RemoteRoot, True);
   CatalogRoot:= NormalizeRemoteThumbnailPath(CatalogRoot, False);
   if (VolumeId = '') or (RemoteRoot = '') or (CatalogRoot = '') then Exit;
-  if Copy(RemotePath, 1, Length(RemoteRoot)) <> RemoteRoot then Exit;
-  if (Length(RemotePath) > Length(RemoteRoot)) and
-     (RemotePath[Length(RemoteRoot) + 1] <> '/') then Exit;
-
-  Tail:= Copy(RemotePath, Length(RemoteRoot) + 1, MaxInt);
+  if Copy(RemoteDirectory, 1, Length(RemoteRoot)) <> RemoteRoot then Exit;
+  if (Length(RemoteDirectory) > Length(RemoteRoot)) and
+     (RemoteDirectory[Length(RemoteRoot) + 1] <> '/') then Exit;
+  Tail:= Copy(RemoteDirectory, Length(RemoteRoot) + 1, MaxInt);
   while (Tail <> '') and (Tail[1] = '/') do Delete(Tail, 1, 1);
-  if Tail = '' then Exit;
-  CatalogPath:= NormalizeRemoteThumbnailPath(CatalogRoot + '/' + Tail, False);
+  if Tail = '' then CatalogPath:= CatalogRoot
+  else CatalogPath:= NormalizeRemoteThumbnailPath(CatalogRoot + '/' + Tail, False);
   Result:= CatalogPath <> '';
+end;
+
+function RemoteThumbnailDirectoryCapabilitiesW(RemoteName: PWideChar): Integer; dcpcall; export;
+var ProviderPath, ConfigPath, VolumeId, CatalogPath, ConnectionJson, RemoteDirectory: UnicodeString;
+begin
+  // 1=settings, 2=local status, 4=mutations, 8=read-only original-request recovery.
+  Result:= 1 or 2;
+  if BuildRemoteThumbnailRequest(RemoteName, ProviderPath, ConfigPath, VolumeId,
+    CatalogPath, ConnectionJson, RemoteDirectory, False, True) then Result:= Result or 8;
+  if BuildRemoteThumbnailRequest(RemoteName, ProviderPath, ConfigPath, VolumeId,
+    CatalogPath, ConnectionJson, RemoteDirectory, True) then Result:= Result or 4;
+end;
+
+function RemoteThumbnailDirectoryStatusW(RequestId, ReturnedJson: PWideChar; Capacity: Integer): Integer; dcpcall; export;
+var Status: UnicodeString;
+begin
+  Result:= 0;
+  if (ReturnedJson = nil) or (Capacity <= 0) then Exit;
+  ReturnedJson[0]:= #0;
+  Status:= GetRemoteDirectoryStatus(UTF8ToUTF16(GetRemoteThumbnailProviderPath),
+    UTF8ToUTF16(GetRemoteThumbnailConfigPath), UnicodeString(RequestId), PluginNumber, LogProc);
+  if Length(Status) >= Capacity then Exit;
+  StrPLCopy(ReturnedJson, Status, Capacity - 1);
+  Result:= 1;
 end;
 
 function GetConnectionByPath(const sPath: UnicodeString; out FtpSend: TFTPSendEx;
@@ -830,9 +907,59 @@ var
   RemoteDir: AnsiString;
   asFileName: AnsiString;
   wsFileName: UnicodeString;
+  ControlVerb, ControlAction, RequestId: UnicodeString;
+  ProviderPath, ConfigPath, VolumeId, CatalogPath, ConnectionJson, RemoteDirectory: UnicodeString;
+  Colon: Integer;
+  Identity: TGUID;
 begin
   Result:= FS_EXEC_YOURSELF;
   if (RemoteName = '') then Exit;
+  ControlVerb:= UnicodeString(Verb);
+  if ControlVerb = 'remotethumbnail.configure' then
+    Exit(ConfigureRemoteThumbnailProvider(UTF8ToUTF16(GetRemoteThumbnailProviderPath),
+      UTF8ToUTF16(GetRemoteThumbnailConfigPath), PluginNumber, LogProc, MainWin));
+  if Pos('remotethumbnail.index.resume:', ControlVerb) = 1 then
+  begin
+    Result:= FS_EXEC_ERROR;
+    RequestId:= Copy(ControlVerb, Length('remotethumbnail.index.resume:') + 1, MaxInt);
+    if not BuildRemoteThumbnailRequest(RemoteName, ProviderPath, ConfigPath, VolumeId,
+      CatalogPath, ConnectionJson, RemoteDirectory, False, True) then Exit;
+    if ResumeRemoteDirectoryIndex(ProviderPath, ConfigPath, ConnectionJson, RequestId, PluginNumber, LogProc) then
+      Result:= FS_EXEC_OK;
+    Exit;
+  end;
+  if Pos('remotethumbnail.index.', ControlVerb) = 1 then
+  begin
+    Result:= FS_EXEC_ERROR;
+    ControlAction:= Copy(ControlVerb, Length('remotethumbnail.index.') + 1, MaxInt);
+    Colon:= Pos(':', ControlAction);
+    if Colon > 0 then
+    begin
+      RequestId:= Copy(ControlAction, Colon + 1, MaxInt);
+      ControlAction:= Copy(ControlAction, 1, Colon - 1);
+    end
+    else begin
+      if CreateGUID(Identity) <> 0 then Exit;
+      RequestId:= LowerCase(Copy(UnicodeString(GUIDToString(Identity)), 2, 36));
+    end;
+    if (ControlAction <> 'add') and (ControlAction <> 'remove') and (ControlAction <> 'refresh') then Exit;
+    if not BuildRemoteThumbnailRequest(RemoteName, ProviderPath, ConfigPath, VolumeId,
+      CatalogPath, ConnectionJson, RemoteDirectory, True) then
+    begin
+      wsFileName:= 'RemoteThumbnail directory control requires an enabled SFTP thumbnail index, ' +
+        'an in-root directory, a configured key/agent and no unsupported proxy. Check connection Thumbnails settings.';
+      if Assigned(LogProc) then LogProc(PluginNumber, msgtype_importanterror, PWideChar(wsFileName));
+      Exit;
+    end;
+    if RequestRemoteDirectoryIndex(ProviderPath, ConfigPath, ConnectionJson, ControlAction,
+      RemoteDirectory, VolumeId, CatalogPath, RequestId, PluginNumber, LogProc) then
+    begin
+      Result:= FS_EXEC_OK;
+      wsFileName:= 'RemoteThumbnail.DirectoryIndex accepted request_id=' + RequestId + ' action=' + ControlAction;
+      if Assigned(LogProc) then LogProc(PluginNumber, msgtype_details, PWideChar(wsFileName));
+    end;
+    Exit;
+  end;
 
   if Verb = 'open' then
     begin
@@ -1035,7 +1162,7 @@ end;
 function FsGetPreviewBitmapW(RemoteName: PWideChar; Width, Height: Integer;
   ReturnedBitmap: Pointer): Integer; dcpcall; export;
 var
-  ProviderPath, ConfigPath, VolumeId, CatalogPath: UnicodeString;
+  ProviderPath, ConfigPath, VolumeId, CatalogPath, ConnectionJson, RemoteDirectory: UnicodeString;
   ReturnedName: array[0..MAX_PATH - 1] of WideChar;
   Bitmap: HBITMAP;
 begin
@@ -1043,12 +1170,12 @@ begin
   if ReturnedBitmap = nil then Exit;
   PWfxBitmapHandle(ReturnedBitmap)^:= 0;
   if not BuildRemoteThumbnailRequest(RemoteName, ProviderPath, ConfigPath,
-     VolumeId, CatalogPath) then Exit;
+     VolumeId, CatalogPath, ConnectionJson, RemoteDirectory) then Exit;
   FillChar(ReturnedName, SizeOf(ReturnedName), 0);
   Bitmap:= 0;
   Result:= GetRemoteThumbnailPreview(ProviderPath, ConfigPath, VolumeId,
     CatalogPath, PluginNumber, LogProc, Width, Height, @ReturnedName[0],
-    Length(ReturnedName), @Bitmap);
+    Length(ReturnedName), @Bitmap, ConnectionJson);
   if (Result and $FF) = FS_BITMAP_NONE then Exit;
   StrPLCopy(RemoteName, UnicodeString(PWideChar(@ReturnedName[0])), MAX_PATH - 1);
   PWfxBitmapHandle(ReturnedBitmap)^:= Bitmap;
@@ -1408,6 +1535,17 @@ begin
   RemoteThumbnailVolumeId:= 'external_primary';
   RemoteThumbnailRemoteRoot:= '/sdcard/Pictures';
   RemoteThumbnailCatalogRoot:= 'Pictures';
+  RemoteThumbnailIndexEnabled:= False;
+  RemoteThumbnailBackend:= 'direct';
+  RemoteThumbnailProtocolRoot:= '~/PhotoThumbSync/v1';
+  RemoteThumbnailTermuxConfig:= '~/.config/photothumbsync/config.toml';
+  RemoteThumbnailTermuxCli:= '~/.local/bin/photothumbsync';
+  RemoteThumbnailControlTransport:= 'ssh';
+  {$IFDEF MSWINDOWS}
+  RemoteThumbnailKnownHosts:= GetEnvironmentVariableUTF8('USERPROFILE') + '\.ssh\known_hosts';
+  {$ELSE}
+  RemoteThumbnailKnownHosts:= GetEnvironmentVariableUTF8('HOME') + '/.ssh/known_hosts';
+  {$ENDIF}
 end;
 
 procedure TConnection.Assign(Connection: TConnection);
@@ -1440,13 +1578,27 @@ begin
   RemoteThumbnailVolumeId:= Connection.RemoteThumbnailVolumeId;
   RemoteThumbnailRemoteRoot:= Connection.RemoteThumbnailRemoteRoot;
   RemoteThumbnailCatalogRoot:= Connection.RemoteThumbnailCatalogRoot;
+  RemoteThumbnailIndexEnabled:= Connection.RemoteThumbnailIndexEnabled;
+  RemoteThumbnailBackend:= Connection.RemoteThumbnailBackend;
+  RemoteThumbnailProtocolRoot:= Connection.RemoteThumbnailProtocolRoot;
+  RemoteThumbnailTermuxConfig:= Connection.RemoteThumbnailTermuxConfig;
+  RemoteThumbnailTermuxCli:= Connection.RemoteThumbnailTermuxCli;
+  RemoteThumbnailKnownHosts:= Connection.RemoteThumbnailKnownHosts;
+  RemoteThumbnailControlTransport:= Connection.RemoteThumbnailControlTransport;
+end;
+
+procedure FsContentPluginUnloading; dcpcall;
+begin
+  { The provider owns joinable workers. The host calls this while the FTP DLL
+    is still fully loaded, before FreeLibrary acquires the loader lock. }
+  ShutdownRemoteThumbnailProvider;
 end;
 
 initialization
   ListLock := syncobjs.TCriticalSection.Create;
 
 finalization
-  ShutdownRemoteThumbnailProvider;
+  { Never join provider workers from DLL finalization / the loader lock. }
   FreeAndNil(ListLock);
 
 end.

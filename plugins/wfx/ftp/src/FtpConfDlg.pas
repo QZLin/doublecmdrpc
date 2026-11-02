@@ -69,6 +69,40 @@ begin
   end;
 end;
 
+procedure EnableRemoteThumbnailControls(pDlg: PtrUInt);
+var
+  Eligible, IndexEnabled, PreviewEnabled, DetailsEnabled: Boolean;
+  Info: String;
+begin
+  with gStartupInfo do
+  begin
+    Eligible:= gConnection.OpenSSH and not gConnection.OnlySCP and (ProxyIndex = 0);
+    IndexEnabled:= SendDlgMsg(pDlg, 'chkRemoteThumbnailIndexEnabled', DM_GETCHECK, 0, 0) <> 0;
+    PreviewEnabled:= SendDlgMsg(pDlg, 'chkRemoteThumbnailEnabled', DM_GETCHECK, 0, 0) <> 0;
+    // Keep a checked control editable so switching protocol cannot trap opt-in.
+    SendDlgMsg(pDlg, 'chkRemoteThumbnailIndexEnabled', DM_ENABLE, PtrInt(Eligible or IndexEnabled), 0);
+    SendDlgMsg(pDlg, 'chkRemoteThumbnailEnabled', DM_ENABLE, 1, 0);
+    DetailsEnabled:= Eligible or IndexEnabled;
+    SendDlgMsg(pDlg, 'cmbRemoteThumbnailBackend', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'cmbRemoteThumbnailControlTransport', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailProtocolRoot', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxConfig', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxCli', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'fneRemoteThumbnailKnownHosts', DM_ENABLE, PtrInt(DetailsEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailVolume', DM_ENABLE, PtrInt(Eligible or PreviewEnabled or IndexEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailRemoteRoot', DM_ENABLE, PtrInt(Eligible or PreviewEnabled or IndexEnabled), 0);
+    SendDlgMsg(pDlg, 'edtRemoteThumbnailCatalogRoot', DM_ENABLE, PtrInt(Eligible or PreviewEnabled or IndexEnabled), 0);
+    if not Eligible then
+      Info:= 'Index requires SFTP, not SCP, and no proxy. Disable index before saving an unsupported connection.'
+    else if (SendDlgMsg(pDlg, 'chkAgentSSH', DM_GETCHECK, 0, 0) = 0) and
+            (Trim(String(PAnsiChar(SendDlgMsg(pDlg, 'fnePrivateKey', DM_GETTEXT, 0, 0)))) = '') then
+      Info:= 'Index requires a key pair or SSH agent. Password-only authentication cannot be sent to the helper.'
+    else
+      Info:= 'Uses this DCRPC host/port/user/key or agent. Direct is default; PC is optional. Recovery never resends an action.';
+    SendDlgMsg(pDlg, 'lblRemoteThumbnailIndexInfo', DM_SETTEXT, PtrInt(PAnsiChar(Info)), 0);
+  end;
+end;
+
 procedure EnableControls(pDlg: PtrUInt);
 begin
   with gStartupInfo do
@@ -329,6 +363,19 @@ begin
           Text:= GetRemoteThumbnailConfigPath;
           Data:= PtrInt(PAnsiChar(Text));
           SendDlgMsg(pDlg, 'fneRemoteThumbnailConfig', DM_SETTEXT, Data, 0);
+          SendDlgMsg(pDlg, 'chkRemoteThumbnailIndexEnabled', DM_SETCHECK, PtrInt(gConnection.RemoteThumbnailIndexEnabled), 0);
+          SendDlgMsg(pDlg, 'cmbRemoteThumbnailBackend', DM_LISTSETITEMINDEX,
+            PtrInt(gConnection.RemoteThumbnailBackend = 'pc'), 0);
+          SendDlgMsg(pDlg, 'cmbRemoteThumbnailControlTransport', DM_LISTSETITEMINDEX,
+            PtrInt(gConnection.RemoteThumbnailControlTransport = 'sftp'), 0);
+          Text:= gConnection.RemoteThumbnailProtocolRoot;
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailProtocolRoot', DM_SETTEXT, PtrInt(PAnsiChar(Text)), 0);
+          Text:= gConnection.RemoteThumbnailTermuxConfig;
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxConfig', DM_SETTEXT, PtrInt(PAnsiChar(Text)), 0);
+          Text:= gConnection.RemoteThumbnailTermuxCli;
+          SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxCli', DM_SETTEXT, PtrInt(PAnsiChar(Text)), 0);
+          Text:= gConnection.RemoteThumbnailKnownHosts;
+          SendDlgMsg(pDlg, 'fneRemoteThumbnailKnownHosts', DM_SETTEXT, PtrInt(PAnsiChar(Text)), 0);
 
           if SameText(gConnection.ConnectionName, cQuickConnection) then
           begin
@@ -336,9 +383,9 @@ begin
             SendDlgMsg(pDlg, 'chkMasterPassword', DM_SHOWITEM, 0, 0);
           end;
 
-          EnableControls(pDlg);
-
           LoadProxyList(pDlg);
+          EnableControls(pDlg);
+          EnableRemoteThumbnailControls(pDlg);
         end;
       DN_CHANGE:
         begin
@@ -393,6 +440,7 @@ begin
             end;
           end;
           EnableControls(pDlg);
+          EnableRemoteThumbnailControls(pDlg);
         end
         else if DlgItemName = 'cmbProxy' then
           begin
@@ -400,7 +448,14 @@ begin
             ProxyIndex:= SendDlgMsg(pDlg, 'cmbProxy', DM_LISTGETITEMINDEX, 0, 0);
             // Load current proxy settings
             LoadProxy(pDlg);
-          end;
+            EnableRemoteThumbnailControls(pDlg);
+          end
+        else if (DlgItemName = 'chkRemoteThumbnailIndexEnabled') or
+                (DlgItemName = 'chkRemoteThumbnailEnabled') or
+                (DlgItemName = 'chkAgentSSH') or
+                (DlgItemName = 'fnePrivateKey') or
+                (DlgItemName = 'fnePublicKey') then
+          EnableRemoteThumbnailControls(pDlg);
         end;
       DN_CLICK:
         if DlgItemName = 'btnAnonymous' then
@@ -503,7 +558,36 @@ begin
             ProviderPath:= Trim(PAnsiChar(Data));
             Data:= SendDlgMsg(pDlg, 'fneRemoteThumbnailConfig', DM_GETTEXT, 0, 0);
             ConfigPath:= Trim(PAnsiChar(Data));
-            if gConnection.RemoteThumbnailEnabled and
+            Data:= SendDlgMsg(pDlg, 'chkRemoteThumbnailIndexEnabled', DM_GETCHECK, 0, 0);
+            gConnection.RemoteThumbnailIndexEnabled:= Boolean(Data);
+            Data:= SendDlgMsg(pDlg, 'cmbRemoteThumbnailBackend', DM_LISTGETITEMINDEX, 0, 0);
+            if Data = 1 then gConnection.RemoteThumbnailBackend:= 'pc'
+            else gConnection.RemoteThumbnailBackend:= 'direct';
+            Data:= SendDlgMsg(pDlg, 'cmbRemoteThumbnailControlTransport', DM_LISTGETITEMINDEX, 0, 0);
+            if Data = 1 then gConnection.RemoteThumbnailControlTransport:= 'sftp'
+            else gConnection.RemoteThumbnailControlTransport:= 'ssh';
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailProtocolRoot', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailProtocolRoot:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxConfig', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailTermuxConfig:= Trim(PAnsiChar(Data));
+            Data:= SendDlgMsg(pDlg, 'edtRemoteThumbnailTermuxCli', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailTermuxCli:= Trim(PAnsiChar(Data));
+            if gConnection.RemoteThumbnailTermuxCli = '' then
+              gConnection.RemoteThumbnailTermuxCli:= '~/.local/bin/photothumbsync';
+            Data:= SendDlgMsg(pDlg, 'fneRemoteThumbnailKnownHosts', DM_GETTEXT, 0, 0);
+            gConnection.RemoteThumbnailKnownHosts:= Trim(PAnsiChar(Data));
+            if gConnection.RemoteThumbnailIndexEnabled and
+               (not gConnection.OpenSSH or gConnection.OnlySCP or (ProxyIndex > 0) or
+                 (not gConnection.AgentSSH and (gConnection.PrivateKey = '')) or
+                (gConnection.RemoteThumbnailProtocolRoot = '') or
+                (gConnection.RemoteThumbnailTermuxConfig = '') or
+                (gConnection.RemoteThumbnailKnownHosts = '')) then
+            begin
+              gStartupInfo.MessageBox('Directory index requires SFTP (not SCP), no proxy, a key/agent, protocol v1 root, Termux config and verified known_hosts. Password-only authentication is not supported.',
+                                      'FTP', MB_OK or MB_ICONERROR);
+              Exit;
+            end;
+            if (gConnection.RemoteThumbnailEnabled or gConnection.RemoteThumbnailIndexEnabled) and
                ((gConnection.RemoteThumbnailVolumeId = '') or
                 (gConnection.RemoteThumbnailRemoteRoot = '') or
                 (gConnection.RemoteThumbnailCatalogRoot = '')) then

@@ -24,6 +24,8 @@ exports
   FsFindNextW,
   FsFindClose,
   FsExecuteFileW,
+  RemoteThumbnailDirectoryStatusW,
+  RemoteThumbnailDirectoryCapabilitiesW,
   FsRenMovFileW,
   FsGetFileW,
   FsGetPreviewBitmapW,
@@ -38,6 +40,7 @@ exports
   FsSetDefaultParams,
   FsStatusInfoW,
   FsGetBackgroundFlags,
+  FsContentPluginUnloading,
   FsExtractCustomIconW,
   {
   FsNetworkGetSupportedProtocols,

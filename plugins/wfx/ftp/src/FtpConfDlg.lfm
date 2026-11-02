@@ -445,6 +445,7 @@ object DialogBox: TDialogBox
           Width = 178
           Caption = 'Use SSH-agent authentication'
           TabOrder = 0
+          OnChange = CheckBoxChange
         end
         object chkCopySCP: TCheckBox
           AnchorSideLeft.Control = gbSSH
@@ -556,6 +557,7 @@ object DialogBox: TDialogBox
         Width = 249
         Caption = 'Enable PhotoThumbSync thumbnails'
         TabOrder = 0
+        OnChange = CheckBoxChange
       end
       object lblRemoteThumbnailVolume: TLabel
         Left = 12
@@ -656,6 +658,142 @@ object DialogBox: TDialogBox
         Width = 388
         AutoSize = False
         Caption = 'Blank paths use RemoteThumbnailProvider.dll and RemoteThumbnailWFX.ini next to ftp.wfx. Mapping example: /sdcard/Pictures -> Pictures.'
+        ParentColor = False
+        WordWrap = True
+      end
+    end
+    object tsRemoteThumbnailIndex: TTabSheet
+      Caption = 'Index'
+      ClientHeight = 388
+      ClientWidth = 412
+      object lblRemoteThumbnailIndexInfo: TLabel
+        Left = 12
+        Top = 12
+        Width = 388
+        Height = 44
+        AutoSize = False
+        Caption = 'Directory index actions reuse this connection host, port, user, key pair and agent. No second SFTP configuration is required in the plugin.'
+        ParentColor = False
+        WordWrap = True
+      end
+      object chkRemoteThumbnailIndexEnabled: TCheckBox
+        Left = 12
+        Top = 61
+        Width = 388
+        Height = 19
+        Caption = 'Allow add / remove / refresh directory index (SFTP only)'
+        TabOrder = 0
+        OnChange = CheckBoxChange
+      end
+      object lblRemoteThumbnailBackend: TLabel
+        Left = 12
+        Top = 96
+        Caption = 'Cache backend:'
+        ParentColor = False
+      end
+      object cmbRemoteThumbnailBackend: TComboBox
+        Left = 142
+        Top = 91
+        Width = 258
+        Height = 26
+        Anchors = [akTop, akLeft, akRight]
+        Items.Strings = (
+          'Direct - no RemoteThumbnailPC'
+          'RemoteThumbnailPC - optional'
+        )
+        ItemIndex = 0
+        Style = csDropDownList
+        TabOrder = 1
+      end
+      object lblRemoteThumbnailControlTransport: TLabel
+        Left = 12
+        Top = 128
+        Caption = 'Notify Termux:'
+        ParentColor = False
+      end
+      object cmbRemoteThumbnailControlTransport: TComboBox
+        Left = 142
+        Top = 123
+        Width = 258
+        Height = 26
+        Anchors = [akTop, akLeft, akRight]
+        Items.Strings = (
+          'SSH - preferred'
+          'SFTP inbox - watcher required'
+        )
+        ItemIndex = 0
+        Style = csDropDownList
+        TabOrder = 2
+      end
+      object lblRemoteThumbnailProtocolRoot: TLabel
+        Left = 12
+        Top = 160
+        Caption = 'Protocol v1 root:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailProtocolRoot: TEdit
+        Left = 142
+        Top = 155
+        Width = 258
+        Height = 26
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 3
+      end
+      object lblRemoteThumbnailTermuxConfig: TLabel
+        Left = 12
+        Top = 192
+        Caption = 'Termux config:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailTermuxConfig: TEdit
+        Left = 142
+        Top = 187
+        Width = 258
+        Height = 26
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 4
+      end
+      object lblRemoteThumbnailTermuxCli: TLabel
+        Left = 12
+        Top = 224
+        Caption = 'Termux CLI:'
+        ParentColor = False
+      end
+      object edtRemoteThumbnailTermuxCli: TEdit
+        Left = 142
+        Top = 219
+        Width = 258
+        Height = 26
+        Anchors = [akTop, akLeft, akRight]
+        TabOrder = 5
+      end
+      object lblRemoteThumbnailKnownHosts: TLabel
+        Left = 12
+        Top = 251
+        Caption = 'Verified SSH known_hosts:'
+        ParentColor = False
+      end
+      object fneRemoteThumbnailKnownHosts: TFileNameEdit
+        Left = 12
+        Top = 270
+        Width = 388
+        Height = 23
+        Anchors = [akTop, akLeft, akRight]
+        Filter = 'Known hosts|known_hosts|All files|*.*'
+        FilterIndex = 1
+        HideDirectories = False
+        ButtonWidth = 23
+        NumGlyphs = 1
+        MaxLength = 0
+        TabOrder = 6
+      end
+      object lblRemoteThumbnailIndexSafety: TLabel
+        Left = 12
+        Top = 300
+        Width = 388
+        Height = 76
+        AutoSize = False
+        Caption = 'Termux must enable [control] and allowed_roots. SSH mode invokes the CLI above; SFTP inbox mode requires photothumbsync control watch. Host keys must be pre-trusted; no password prompts. Remove changes index/cache references only, never original photos.'
         ParentColor = False
         WordWrap = True
       end

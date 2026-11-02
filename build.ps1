@@ -8,8 +8,8 @@ working directory, fails on the first unsuccessful lazbuild invocation, and
 uses an isolated Lazarus profile by default.
 
 The repository may be a sparse checkout without components/. In that case the
-script first looks for the component sources used by RemoteThumbnailWDX at
-..\RemoteThumbnailWDX\build-dc-host\source\components. Override that choice
+script first looks for the component sources used by RemoteThumbnailDCPlug at
+..\RemoteThumbnailDCPlug\build-dc-host\source\components. Override that choice
 with -ComponentsDirectory when necessary.
 
 .PARAMETER Target
@@ -72,7 +72,7 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = [IO.Path]::GetFullPath($PSScriptRoot)
 $workspaceRoot = Split-Path -Parent $projectRoot
-$dcHostBuildRoot = Join-Path $workspaceRoot 'RemoteThumbnailWDX\build-dc-host'
+$dcHostBuildRoot = Join-Path $workspaceRoot 'RemoteThumbnailDCPlug\build-dc-host'
 
 function Resolve-BuildPath {
     param(
@@ -305,9 +305,14 @@ function Invoke-LazBuild {
     $arguments += [IO.Path]::GetFullPath($Project)
 
     Write-Host "`n==> $Label" -ForegroundColor Cyan
-    & $lazbuild @arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "lazbuild failed with exit code $LASTEXITCODE while building $Label"
+    Push-Location ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Project)))
+    try {
+        & $lazbuild @arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "lazbuild failed with exit code $LASTEXITCODE while building $Label"
+        }
+    } finally {
+        Pop-Location
     }
 }
 

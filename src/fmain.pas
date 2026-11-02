@@ -1,4 +1,4 @@
-﻿{
+{
    Double Commander
    -------------------------------------------------------------------------
    Licence  : GNU GPL v 2.0
@@ -74,6 +74,20 @@ type
 
   TfrmMain = class(TAloneForm, IFormCommands)
     actAddPlugin: TAction;
+    actRemoteThumbnailIndexDirectory: TAction;
+    actRemoteThumbnailRemoveDirectoryIndex: TAction;
+    actRemoteThumbnailRefreshDirectoryIndex: TAction;
+    actRemoteThumbnailIndexStatus: TAction;
+    actRemoteThumbnailResumeDirectoryIndex: TAction;
+    actRemoteThumbnailConfigure: TAction;
+    mnuRemoteThumbnails: TMenuItem;
+    miRemoteThumbnailIndexDirectory: TMenuItem;
+    miRemoteThumbnailRemoveDirectoryIndex: TMenuItem;
+    miRemoteThumbnailRefreshDirectoryIndex: TMenuItem;
+    miRemoteThumbnailSeparator: TMenuItem;
+    miRemoteThumbnailIndexStatus: TMenuItem;
+    miRemoteThumbnailResumeDirectoryIndex: TMenuItem;
+    miRemoteThumbnailConfigure: TMenuItem;
     actAddToStash: TAction;
     actEmptyStash: TAction;
     actCallPlatformFunctions: TAction;
@@ -628,6 +642,7 @@ type
     procedure dskLeftToolButtonClick(Sender: TObject);
     procedure dskRightToolButtonClick(Sender: TObject);
     procedure FormCreate(Sender: TObject);
+    procedure RemoteThumbnailActionUpdate(Sender: TObject);
     procedure FormDestroy(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: boolean);
     procedure FormDropFiles(Sender: TObject; const FileNames: array of String);
@@ -913,6 +928,7 @@ type
     procedure SaveWindowState;
 
     procedure LoadToolbar(AToolBar: TKASToolBar);
+    procedure EnsureRemoteThumbnailToolbarActions;
     procedure SaveToolBar(AToolBar: TKASToolBar);
 
     procedure ShowLogWindow(Data: PtrInt);
@@ -977,7 +993,7 @@ uses
   Laz2_XMLRead, DCOSUtils, DCStrUtils, fOptions, fOptionsFrame, fOptionsToolbar, uClassesEx,
   uHotDir, uFileSorting, DCBasicTypes, foptionsDirectoryHotlist, uConnectionManager,
   fOptionsToolbarBase, fOptionsToolbarMiddle, fEditor, uColumns, StrUtils, uSysFolders,
-  uColumnsFileView, dmHigh, uFileSourceOperationMisc
+  uColumnsFileView, dmHigh, uFileSourceOperationMisc, uRemoteThumbnailDirectory
 {$IFDEF MSWINDOWS}
   , uShellFileSource, uNetworkThread
 {$ENDIF}
@@ -1296,6 +1312,22 @@ end;
 procedure TfrmMain.btnLeftClick(Sender: TObject);
 begin
   PanelButtonClick(Sender as TSpeedButton, FrameLeft);
+end;
+
+procedure TfrmMain.RemoteThumbnailActionUpdate(Sender: TObject);
+var Capability, Required: Integer;
+begin
+  if not Assigned(nbLeft) or not Assigned(nbRight) then
+  begin
+    TAction(Sender).Enabled:= False;
+    Exit;
+  end;
+  Capability:= RemoteThumbnailDirectoryCapabilities(ActiveFrame);
+  Required:= RemoteThumbnailCanMutate;
+  if Sender = actRemoteThumbnailIndexStatus then Required:= RemoteThumbnailCanReadStatus
+  else if Sender = actRemoteThumbnailConfigure then Required:= RemoteThumbnailCanConfigure
+  else if Sender = actRemoteThumbnailResumeDirectoryIndex then Required:= RemoteThumbnailCanResume;
+  TAction(Sender).Enabled:= (Capability and Required) <> 0;
 end;
 
 procedure TfrmMain.actExecute(Sender: TObject);
@@ -6578,6 +6610,36 @@ begin
   end;
 end;
 
+procedure TfrmMain.EnsureRemoteThumbnailToolbarActions;
+const
+  Names: array[0..2] of String = ('cm_RemoteThumbnailIndexDirectory',
+    'cm_RemoteThumbnailRemoveDirectoryIndex', 'cm_RemoteThumbnailRefreshDirectoryIndex');
+  Icons: array[0..2] of String = ('cm_markplus', 'cm_markminus', 'cm_refresh');
+var
+  Index, ButtonIndex: Integer;
+  Found: Boolean;
+  CommandItem: TKASCommandItem;
+begin
+  if gConfig.GetValue(gConfig.RootNode, 'RemoteThumbnail/ToolbarActionsAdded', False) then Exit;
+  for Index:= 0 to High(Names) do
+  begin
+    Found:= False;
+    for ButtonIndex:= 0 to MainToolBar.ButtonCount - 1 do
+      if MainToolBar.Buttons[ButtonIndex].ToolItem is TKASCommandItem then
+        if TKASCommandItem(MainToolBar.Buttons[ButtonIndex].ToolItem).Command = Names[Index] then
+          Found:= True;
+    if not Found then
+    begin
+      CommandItem:= TKASCommandItem.Create(Commands.Commands);
+      CommandItem.Command:= Names[Index];
+      CommandItem.Icon:= Icons[Index];
+      MainToolBar.AddButton(CommandItem);
+    end;
+  end;
+  SaveToolBar(MainToolBar);
+  gConfig.SetValue(gConfig.RootNode, 'RemoteThumbnail/ToolbarActionsAdded', True);
+end;
+
 procedure TfrmMain.LoadToolbar(AToolBar: TKASToolBar);
 var
   ToolBarLoader: TKASToolBarExtendedLoader;
@@ -6594,6 +6656,7 @@ begin
     ToolBarLoader.Free;
     AToolBar.EndUpdate;
   end;
+  if AToolBar = MainToolBar then EnsureRemoteThumbnailToolbarActions;
 end;
 
 procedure TfrmMain.SaveToolBar(AToolBar: TKASToolBar);

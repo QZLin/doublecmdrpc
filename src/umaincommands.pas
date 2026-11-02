@@ -47,6 +47,7 @@ type
 
    // Helper routines
    procedure TryGetParentDir(FileView: TFileView; var SelectedFiles: TFiles);
+   procedure DoRemoteThumbnailDirectoryAction(const AAction: String);
 
    // Filters out commands.
    function CommandsFilter(Command: String): Boolean;
@@ -245,6 +246,12 @@ type
    procedure cm_LeftColumnsView(const Params: array of string);
    procedure cm_RightColumnsView(const Params: array of string);
    procedure cm_ThumbnailsView(const Params: array of string);
+   procedure cm_RemoteThumbnailIndexDirectory(const Params: array of string);
+   procedure cm_RemoteThumbnailRemoveDirectoryIndex(const Params: array of string);
+   procedure cm_RemoteThumbnailRefreshDirectoryIndex(const Params: array of string);
+   procedure cm_RemoteThumbnailIndexStatus(const Params: array of string);
+   procedure cm_RemoteThumbnailResumeDirectoryIndex(const Params: array of string);
+   procedure cm_RemoteThumbnailConfigure(const Params: array of string);
    procedure cm_LeftThumbView(const Params: array of string);
    procedure cm_RightThumbView(const Params: array of string);
    procedure cm_TreeView(const Params: array of string);
@@ -414,7 +421,7 @@ uses fOptionsPluginsBase, fOptionsPluginsDSX, fOptionsPluginsWCX,
      uHotDir, DCXmlConfig, dmCommonData, fOptionsFrame, foptionsDirectoryHotlist,
      fMainCommandsDlg, uConnectionManager, fOptionsFavoriteTabs, fTreeViewMenu,
      uArchiveFileSource, fOptionsHotKeys, fBenchmark, uAdministrator, uWcxArchiveFileSource,
-     uColumnsFileView, uTypes,
+     uColumnsFileView, uTypes, uRemoteThumbnailDirectory,
      uStashFileSource, uStashFilesBackend,
      LCLVersion
      {$IFDEF DARWIN}
@@ -2372,6 +2379,66 @@ begin
       aFileView:= TColumnsFileView.Create(WorkingNotebook.ActivePage, WorkingFileView, WorkingNotebook.ActivePage.BackupColumnSet);
   end;
   WorkingNotebook.ActivePage.FileView:= aFileView;
+end;
+
+procedure TMainCommands.DoRemoteThumbnailDirectoryAction(const AAction: String);
+var RequestId: String;
+begin
+  if (AAction = 'remove') and
+     (MessageDlg('PhotoThumbSync', '仅移除当前目录的索引和缩略图缓存，不会删除远程原图。继续？',
+       mtConfirmation, [mbYes, mbNo], 0) <> mrYes) then Exit;
+  RequestId:= '';
+  try
+    if not RequestRemoteThumbnailDirectory(frmMain.ActiveFrame, AAction, RequestId,
+      GetWindowHandle(frmMain)) then
+      raise Exception.Create('目录任务被插件拒绝。请检查 SFTP 连接的 Thumbnails 索引开关、路径映射和密钥；详情见日志。');
+  except
+    on E: Exception do MessageDlg('PhotoThumbSync', E.Message, mtError, [mbOK], 0);
+  end;
+end;
+
+procedure TMainCommands.cm_RemoteThumbnailIndexDirectory(const Params: array of string);
+begin DoRemoteThumbnailDirectoryAction('add'); end;
+
+procedure TMainCommands.cm_RemoteThumbnailRemoveDirectoryIndex(const Params: array of string);
+begin DoRemoteThumbnailDirectoryAction('remove'); end;
+
+procedure TMainCommands.cm_RemoteThumbnailRefreshDirectoryIndex(const Params: array of string);
+begin DoRemoteThumbnailDirectoryAction('refresh'); end;
+
+procedure TMainCommands.cm_RemoteThumbnailIndexStatus(const Params: array of string);
+begin
+  try
+    MessageDlg('PhotoThumbSync 目录任务状态', RemoteThumbnailDirectoryStatus(frmMain.ActiveFrame, ''),
+      mtInformation, [mbOK], 0);
+  except
+    on E: Exception do MessageDlg('PhotoThumbSync', E.Message, mtError, [mbOK], 0);
+  end;
+end;
+
+procedure TMainCommands.cm_RemoteThumbnailResumeDirectoryIndex(const Params: array of string);
+var RequestId: String;
+begin
+  RequestId:= LastRemoteThumbnailDirectoryRequestId;
+  if Length(Params) > 0 then RequestId:= Params[0]
+  else if not InputQuery('PhotoThumbSync 只读恢复',
+    '原请求 UUID：只查询和缓存结果，绝不重发索引操作', RequestId) then Exit;
+  try
+    if not ResumeRemoteThumbnailDirectory(frmMain.ActiveFrame, RequestId, GetWindowHandle(frmMain)) then
+      raise Exception.Create('原请求不存在或不属于当前连接；未提交新操作。请检查原 UUID 和任务日志。');
+  except
+    on E: Exception do MessageDlg('PhotoThumbSync', E.Message, mtError, [mbOK], 0);
+  end;
+end;
+
+procedure TMainCommands.cm_RemoteThumbnailConfigure(const Params: array of string);
+begin
+  try
+    if not ConfigureRemoteThumbnailDirectory(frmMain.ActiveFrame, GetWindowHandle(frmMain)) then
+      raise Exception.Create('插件配置不可用，请先更新 provider。SFTP 参数在连接的 Thumbnails 页配置。');
+  except
+    on E: Exception do MessageDlg('PhotoThumbSync', E.Message, mtError, [mbOK], 0);
+  end;
 end;
 
 procedure TMainCommands.cm_ThumbnailsView(const Params: array of string);
